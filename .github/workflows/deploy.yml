@@ -1,0 +1,48 @@
+name: Deploy to A9
+
+# Triggered on every push to main after CI passes.
+# Requires a self-hosted runner registered on the Geekom A9.
+# See deploy/RUNBOOK.md Step 8 for runner setup instructions.
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy (self-hosted A9 runner)
+    runs-on: self-hosted
+    needs: []   # CI workflow is separate; uncomment and add ci job id if you merge into one file
+
+    # Only run if the runner is online; the job will queue otherwise.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history not needed; shallow clone speeds up checkout
+          fetch-depth: 1
+
+      - name: Pull latest images and rebuild
+        working-directory: /opt/alpha
+        run: |
+          git pull origin main
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml pull --quiet || true
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --remove-orphans
+
+      - name: Run Prisma migrations
+        working-directory: /opt/alpha
+        run: |
+          docker compose exec -T api pnpm --filter @alpha/db prisma migrate deploy
+
+      - name: Smoke test — API healthz
+        run: |
+          sleep 10
+          curl -sf http://localhost:3001/healthz || (echo "API healthz FAILED" && exit 1)
+
+      - name: Smoke test — Web home
+        run: |
+          curl -sf http://localhost:3000/ | grep -i "Alpha" || (echo "Web home FAILED" && exit 1)
