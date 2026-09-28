@@ -27,7 +27,7 @@ const COLORS = [
   "#f97316", // orange
 ];
 
-const TIME_RANGES: TimeRange[] = ["1W", "1M", "3M", "YTD", "1Y", "5Y"];
+const TIME_RANGES: TimeRange[] = ["1W", "1M", "3M", "YTD", "1Y", "5Y", "custom"];
 
 // ── Normalisation helper ──────────────────────────────────────────────────────
 function normalizeCandles(
@@ -177,18 +177,35 @@ interface ComparisonChartPanelProps {
   panelId: string;
   tickers: string[];
   timeRange: string;
+  /** unix seconds — persisted in workspace layout for custom range survival across reload */
+  customFrom?: number;
+  customTo?: number;
 }
 
 export function ComparisonChartPanel({
   panelId,
   tickers: initialTickers,
   timeRange: initialTimeRange,
+  customFrom: initialCustomFrom,
+  customTo: initialCustomTo,
 }: ComparisonChartPanelProps) {
   const [chartTickers, setChartTickers] = useState<string[]>(initialTickers);
   const [timeRange, setTimeRange] = useState<TimeRange>(
     (initialTimeRange as TimeRange) ?? "1Y"
   );
   const [newTicker, setNewTicker] = useState("");
+
+  // Custom date range state — ISO date strings for <input type="date">
+  const [customFromDate, setCustomFromDate] = useState<string>(() =>
+    initialCustomFrom
+      ? new Date(initialCustomFrom * 1000).toISOString().slice(0, 10)
+      : ""
+  );
+  const [customToDate, setCustomToDate] = useState<string>(() =>
+    initialCustomTo
+      ? new Date(initialCustomTo * 1000).toISOString().slice(0, 10)
+      : ""
+  );
 
   // Subscribe only to activeTimeRange from the store
   const storeTimeRange = useTickerStore((s) => s.activeTimeRange);
@@ -199,8 +216,17 @@ export function ComparisonChartPanel({
     setTimeRange(storeTimeRange);
   }, [storeTimeRange]);
 
-  // Resolve query params once (memoised on timeRange change)
-  const { from, to } = timeRangeToUnix(timeRange);
+  // Resolve query params once (memoised on timeRange / custom date change)
+  const customFromTs = customFromDate
+    ? Math.floor(new Date(customFromDate).getTime() / 1000)
+    : 0;
+  const customToTs = customToDate
+    ? Math.floor(new Date(customToDate).getTime() / 1000)
+    : 0;
+  const { from, to } =
+    timeRange === "custom" && customFromTs > 0 && customToTs > 0
+      ? { from: customFromTs, to: customToTs }
+      : timeRangeToUnix(timeRange);
   const resolution = timeRangeToResolution(timeRange);
 
   // useQueries is a single hook call — safe to use with a dynamic array.
@@ -278,7 +304,7 @@ export function ComparisonChartPanel({
       {/* Controls */}
       <div className="flex items-center gap-2 flex-wrap shrink-0">
         {/* Time range selector */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 flex-wrap">
           {TIME_RANGES.map((range) => (
             <button
               key={range}
@@ -289,9 +315,28 @@ export function ComparisonChartPanel({
               }`}
               onClick={() => handleTimeRangeClick(range)}
             >
-              {range}
+              {range === "custom" ? "Custom" : range}
             </button>
           ))}
+          {timeRange === "custom" && (
+            <div className="flex items-center gap-1">
+              <input
+                type="date"
+                value={customFromDate}
+                onChange={(e) => setCustomFromDate(e.target.value)}
+                className="h-6 px-1.5 text-xs rounded border border-input bg-background text-foreground"
+                aria-label="Custom range start date"
+              />
+              <span className="text-xs text-muted-foreground">→</span>
+              <input
+                type="date"
+                value={customToDate}
+                onChange={(e) => setCustomToDate(e.target.value)}
+                className="h-6 px-1.5 text-xs rounded border border-input bg-background text-foreground"
+                aria-label="Custom range end date"
+              />
+            </div>
+          )}
         </div>
 
         {/* Ticker chips */}

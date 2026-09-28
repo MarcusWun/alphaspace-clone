@@ -143,13 +143,55 @@ describe("ComparisonChartPanel", () => {
     expect(screen.queryByText("AAPL")).toBeNull();
   });
 
-  it("time range buttons exist", () => {
+  it("time range buttons exist including Custom", () => {
     render(
       <ComparisonChartPanel panelId="chart-2" tickers={[]} timeRange="1Y" />,
       { wrapper }
     );
-    ["1W", "1M", "3M", "YTD", "1Y", "5Y"].forEach((range) => {
-      expect(screen.getByText(range)).toBeInTheDocument();
+    ["1W", "1M", "3M", "YTD", "1Y", "5Y", "Custom"].forEach((label) => {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    });
+  });
+
+  it("selecting Custom and entering dates triggers fetch with custom timestamps", async () => {
+    render(
+      <ComparisonChartPanel
+        panelId="chart-custom"
+        tickers={["AAPL"]}
+        timeRange="1Y"
+      />,
+      { wrapper }
+    );
+
+    // Wait for initial fetch
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fetchMock.mockClear();
+
+    // Click Custom button
+    const customBtn = screen.getByText("Custom");
+    act(() => fireEvent.click(customBtn));
+
+    // Date inputs should now be visible
+    const fromInput = screen.getByLabelText("Custom range start date");
+    const toInput = screen.getByLabelText("Custom range end date");
+
+    const fromDateStr = "2024-01-01";
+    const toDateStr = "2024-06-30";
+    const expectedFrom = Math.floor(new Date(fromDateStr).getTime() / 1000);
+    const expectedTo = Math.floor(new Date(toDateStr).getTime() / 1000);
+
+    act(() => {
+      fireEvent.change(fromInput, { target: { value: fromDateStr } });
+      fireEvent.change(toInput, { target: { value: toDateStr } });
+    });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "AAPL",
+        expect.any(String),
+        expectedFrom,
+        expectedTo
+      );
     });
   });
 });
