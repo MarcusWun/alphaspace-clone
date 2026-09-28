@@ -1,0 +1,34 @@
+# Dev overlay — use with: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    command: ["pnpm", "--filter", "api", "dev"]
+    volumes:
+      - ./apps/api/src:/app/apps/api/src
+      - ./packages:/app/packages
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://alpha:alpha@postgres:5432/alpha
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3001:3001"
+      - "9229:9229"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: dev
+    command: ["pnpm", "--filter", "web", "dev"]
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+    environment:
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
