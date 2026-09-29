@@ -85,12 +85,14 @@ done
 
 # ---- 5. Prisma migrate deploy (idempotent) --------------------------------
 say "Running Prisma migrations against the api container"
-if docker compose exec -T api npx prisma migrate deploy; then
+if docker exec "$(docker compose ps -q api)" \
+     /app/node_modules/.pnpm/node_modules/.bin/prisma migrate deploy \
+     --schema=/app/packages/db/prisma/schema.prisma; then
   ok "Prisma migrations applied (or already up to date)"
 else
   warn "prisma migrate deploy returned non-zero — check output above."
   warn "If schema is missing you can retry with:"
-  warn "  docker compose exec api npx prisma migrate deploy"
+  warn "  docker exec \$(docker compose ps -q api) /app/node_modules/.pnpm/node_modules/.bin/prisma migrate deploy --schema=/app/packages/db/prisma/schema.prisma"
 fi
 
 # ---- 6. Restart api so it picks up any new tables -------------------------
