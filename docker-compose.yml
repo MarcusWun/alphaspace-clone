@@ -64,7 +64,11 @@ services:
       dockerfile: apps/web/Dockerfile
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Host port 3002 → container 3000. OpenClaw Control Center already
+      # occupies host :3000 on the LAN deployment machine, so we expose
+      # the web app on :3002 to avoid a bind conflict. AUTH_URL in .env
+      # must match this host port.
+      - "3002:3000"
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
       AUTH_SECRET: ${AUTH_SECRET}

@@ -89,7 +89,7 @@ FINNHUB_API_KEY=$FINNHUB_VALUE
 
 # ---- Auth.js v5 — password-only ----
 AUTH_SECRET=$AUTH_SECRET_VALUE
-AUTH_URL=http://$LAN_IP:3000
+AUTH_URL=http://$LAN_IP:3002
 AUTH_TRUST_HOST=true
 
 # ---- Email magic-link (disabled) ----
@@ -117,7 +117,7 @@ echo
 echo "  Repo:        $REPO_DIR"
 echo "  .env:        $REPO_DIR/.env  (mode $(stat -c '%a' .env))"
 echo "  LAN IP:      $LAN_IP"
-echo "  Web URL:     http://$LAN_IP:3000"
+echo "  Web URL:     http://$LAN_IP:3002"
 echo "  API URL:     http://$LAN_IP:3001"
 echo
 echo "Next step (run from $REPO_DIR):"
