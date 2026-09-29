@@ -60,3 +60,37 @@ jobs:
 
       - name: Build
         run: pnpm -w build
+
+  docker-build:
+    name: Docker Compose Build
+    runs-on: ubuntu-latest
+    # Runs in parallel with the ci job above so a broken Dockerfile fails CI
+    # even when the raw pnpm build succeeds (the class of bug fixed by the
+    # 2026-09-28 docker build hotfix — see prd/alphaspace-clone-docker-build-hotfix-prd.md).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
+      - name: Seed .env for docker compose build
+        # docker compose build reads variable substitutions from .env even
+        # though only build-args would use them; provide a minimal file so
+        # compose does not warn/fail when required vars are unset.
+        run: cp .env.example .env
+
+      - name: docker compose build
+        run: docker compose build --progress=plain
+        env:
+          DOCKER_BUILDKIT: "1"
+          COMPOSE_DOCKER_CLI_BUILD: "1"

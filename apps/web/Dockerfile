@@ -18,6 +18,14 @@ COPY apps/web ./apps/web
 COPY packages/db ./packages/db
 COPY packages/types ./packages/types
 ENV NEXT_TELEMETRY_DISABLED=1
+# Build workspace packages that web depends on before building web itself.
+# pnpm --filter web build does NOT build transitive workspace deps, so
+# @alpha/db and @alpha/types must be built explicitly or the next build
+# fails with TS2307 Cannot find module '@alpha/db' / '@alpha/types'.
+# @alpha/db imports @prisma/client, so prisma generate must run first.
+RUN pnpm --filter @alpha/db exec prisma generate \
+ && pnpm --filter @alpha/types build \
+ && pnpm --filter @alpha/db build
 RUN pnpm --filter web build
 
 # ---- dev target ----
@@ -31,9 +39,16 @@ CMD ["pnpm", "--filter", "web", "dev"]
 
 # ---- prod ----
 FROM node:24-alpine AS prod
+# curl is required by the docker-compose healthcheck for this service.
+RUN apk add --no-cache curl
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+# Next.js standalone server otherwise binds only to the container hostname,
+# which prevents the docker-compose healthcheck (curl localhost:3000) from
+# reaching it. HOSTNAME=0.0.0.0 makes it listen on all interfaces.
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
 
 RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 
