@@ -1,0 +1,22 @@
+# Keep the docker build context small and deterministic.
+
+# Never ship secrets into the build context.
+.env
+.env.*
+!.env.example
+
+# Local build outputs — must always be built fresh inside the container.
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/out
+
+# TypeScript incremental caches — must NEVER enter the container. If they
+# do, tsc --incremental treats the prior build state as authoritative and
+# skips emitting to outDir, which caused CI TS2307 failures on 2026-09-29
+# even though @alpha/db and @alpha/types were "building" successfully.
+**/*.tsbuildinfo
+
+# Git metadata is not needed at build time.
+.git
