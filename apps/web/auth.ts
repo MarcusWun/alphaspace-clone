@@ -7,11 +7,14 @@
  *   - GitHub OAuth (enabled only when AUTH_GITHUB_ID + AUTH_GITHUB_SECRET are set)
  *   - Google OAuth (enabled only when AUTH_GOOGLE_ID + AUTH_GOOGLE_SECRET are set)
  *
- * Sessions persisted in Postgres via the Prisma adapter.
+ * Sessions use JWT strategy so the edge-runtime middleware (middleware.ts) can
+ * decode them without a database round-trip. User/account records are still
+ * persisted in Postgres via the Prisma adapter.
  */
 
 import NextAuth from "next-auth";
 import { PrismaAdapter } from "@auth/prisma-adapter";
+import { authConfig } from "./auth.config";
 import CredentialsProvider from "next-auth/providers/credentials";
 import EmailProvider from "next-auth/providers/nodemailer";
 import GitHubProvider from "next-auth/providers/github";
@@ -82,18 +85,22 @@ if (process.env["AUTH_GOOGLE_ID"] && process.env["AUTH_GOOGLE_SECRET"]) {
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  ...authConfig,
   adapter: PrismaAdapter(prisma),
-  session: { strategy: "database" },
+  // JWT strategy: the session token is a signed JWT stored in a cookie.
+  // This lets the edge-runtime middleware (middleware.ts) decode it without
+  // a database lookup. User/account records are still persisted via the adapter.
+  session: { strategy: "jwt" },
   providers,
-  pages: {
-    signIn: "/auth/signin",
-    verifyRequest: "/auth/verify-request",
-    error: "/auth/error",
-  },
   callbacks: {
-    session({ session, user }) {
-      if (session.user && user) {
-        session.user.id = user.id;
+    jwt({ token, user }) {
+      // On first sign-in `user` is present; persist the DB user id into the token.
+      if (user?.id) token.id = user.id;
+      return token;
+    },
+    session({ session, token }) {
+      if (session.user && token.id) {
+        session.user.id = token.id as string;
       }
       return session;
     },
