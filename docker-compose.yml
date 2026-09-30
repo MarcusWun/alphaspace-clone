@@ -62,6 +62,11 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      args:
+        # Internal Docker network URL for the Next.js server-side API proxy.
+        # Must be the Docker service name, NOT the public LAN URL.
+        # See WORKSPACES-500 in BUG_LEDGER.md.
+        INTERNAL_API_URL: http://api:3001
     restart: unless-stopped
     ports:
       # Host port 3002 → container 3000. OpenClaw Control Center already
