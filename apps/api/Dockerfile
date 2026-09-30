@@ -9,7 +9,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY apps/api/package.json ./apps/api/
 COPY packages/db/package.json ./packages/db/
 COPY packages/types/package.json ./packages/types/
-RUN pnpm install --frozen-lockfile --filter api --filter @alpha/db --filter @alpha/types
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter api --filter @alpha/db --filter @alpha/types
 
 # ---- build ----
 FROM deps AS builder
