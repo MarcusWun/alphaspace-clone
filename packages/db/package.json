@@ -12,6 +12,7 @@
     }
   },
   "scripts": {
+    "postinstall": "prisma generate",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:generate": "prisma generate",
