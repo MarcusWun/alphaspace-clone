@@ -9,7 +9,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/db/package.json ./packages/db/
 COPY packages/types/package.json ./packages/types/
-RUN pnpm install --frozen-lockfile --filter web --filter @alpha/db --filter @alpha/types
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter web --filter @alpha/db --filter @alpha/types
 
 # ---- build ----
 FROM deps AS builder
@@ -18,6 +18,13 @@ COPY apps/web ./apps/web
 COPY packages/db ./packages/db
 COPY packages/types ./packages/types
 ENV NEXT_TELEMETRY_DISABLED=1
+# INTERNAL_API_URL is the server-side proxy target used by next.config.ts
+# rewrites(). Must be the Docker-internal service name so the web container
+# can reach the API container on the Docker bridge network.
+# WORKSPACES-500 root cause: this was missing, causing next.config.ts to bake
+# "http://localhost:3001" (unreachable inside the web container) at build time.
+ARG INTERNAL_API_URL=http://api:3001
+ENV INTERNAL_API_URL=$INTERNAL_API_URL
 # Build workspace packages that web depends on before building web itself.
 # pnpm --filter web build does NOT build transitive workspace deps, so
 # @alpha/db and @alpha/types must be built explicitly or the next build

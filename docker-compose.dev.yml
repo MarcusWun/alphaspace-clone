@@ -30,5 +30,8 @@ services:
       - ./packages:/app/packages
     environment:
       NODE_ENV: development
+      # In dev mode next.config.ts is re-evaluated at startup (not baked),
+      # so INTERNAL_API_URL must be a runtime env var here.
+      INTERNAL_API_URL: http://api:3001
     ports:
       - "3000:3000"
