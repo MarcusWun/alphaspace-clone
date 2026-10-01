@@ -55,7 +55,7 @@ COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --from=builder /app/packages/db/prisma ./packages/db/prisma
 COPY --from=builder /app/packages/db/dist ./packages/db/dist
 COPY --from=builder /app/packages/types/dist ./packages/types/dist
-RUN pnpm install --frozen-lockfile --filter api --filter @alpha/db --filter @alpha/types --prod
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter api --filter @alpha/db --filter @alpha/types --prod
 # Regenerate the Prisma client in the prod image — pnpm install --prod
 # reinstalls @prisma/client cleanly but does not run prisma generate, so
 # the generated client at node_modules/.prisma/client would otherwise be
