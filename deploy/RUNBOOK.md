@@ -197,6 +197,43 @@ The certbot container in `docker-compose.prod.yml` runs `certbot renew` every 12
 
 ---
 
+## P1 — Cloudflare Tunnel LAN flip
+
+> **Branch:** `deploy/cloudflare-tunnel`
+> **Scope:** Flip only the `web` service host binding from `127.0.0.1:3002:3000` → `0.0.0.0:3002:3000`
+>  so Marcus's Windows machine on the home LAN can reach the Alpha app at `http://192.168.0.162:3002`.
+> postgres / redis / api remain `127.0.0.1`-only.
+
+### Marcus rollout steps (A9)
+
+```bash
+cd ~/projects/alphaspace-clone
+git fetch origin
+git checkout deploy/cloudflare-tunnel
+git pull
+docker compose up -d web
+docker compose ps                                     # web must show 0.0.0.0:3002->3000
+docker compose ps | grep -E "postgres|redis|api"      # these must still show 127.0.0.1:*
+```
+
+### LAN smoke test (Windows machine)
+
+1. Open browser → `http://192.168.0.162:3002`
+2. Expect: Alpha signup/login page loads
+3. Expect NOT: timeout or `ERR_CONNECTION_REFUSED`
+4. Reply in CTO channel: **PASS** or paste any error
+
+### Rollback (P1)
+
+```bash
+# Revert to 127.0.0.1 binding — one-liner on the A9:
+docker compose stop web
+# Edit docker-compose.yml: change 0.0.0.0:3002:3000 back to 127.0.0.1:3002:3000
+docker compose up -d web
+```
+
+---
+
 ## Useful commands
 
 ```bash
