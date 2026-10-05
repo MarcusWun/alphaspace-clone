@@ -101,9 +101,11 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token $${CLOUDFLARE_TUNNEL_TOKEN}
+    command: tunnel --no-autoupdate run
     environment:
-      CLOUDFLARE_TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+      # cloudflared reads TUNNEL_TOKEN natively; keeps the token off the process
+      # command line (not visible via `ps`). Value comes from the host .env file.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
       web:
         condition: service_started
