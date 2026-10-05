@@ -234,6 +234,33 @@ docker compose up -d web
 
 ---
 
+## P2 — Cloudflare Tunnel service wired (token comes in P3)
+
+> **Branch:** `deploy/cloudflare-tunnel`
+> **Scope:** `cloudflared` service added to `docker-compose.yml`. No host ports exposed.
+> The service will not start successfully until `CLOUDFLARE_TUNNEL_TOKEN` is set (P3).
+> DO NOT run `docker compose up -d cloudflared` until P3 is complete.
+
+### A9 steps — run AFTER P3 (token in hand)
+
+```bash
+# 1. Paste your tunnel token into .env on the A9
+echo "CLOUDFLARE_TUNNEL_TOKEN=eyJ…your_token_here…" >> ~/projects/alphaspace-clone/.env
+
+# 2. Pull the P2 commit
+cd ~/projects/alphaspace-clone
+git pull
+
+# 3. Start cloudflared (only this service — others are already running)
+docker compose up -d cloudflared
+
+# 4. Confirm tunnel handshake
+docker compose logs -f cloudflared
+# Look for: "Registered tunnel connection" — that means the tunnel is live.
+```
+
+---
+
 ## Useful commands
 
 ```bash
