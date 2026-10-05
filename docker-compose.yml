@@ -73,7 +73,7 @@ services:
       # occupies host :3000 on the LAN deployment machine, so we expose
       # the web app on :3002 to avoid a bind conflict. AUTH_URL in .env
       # must match this host port.
-      - "127.0.0.1:3002:3000"
+      - "0.0.0.0:3002:3000"
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
       AUTH_SECRET: ${AUTH_SECRET}
