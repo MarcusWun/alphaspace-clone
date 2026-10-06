@@ -1,16 +1,11 @@
 /**
- * Candle service re-export.
+ * Candle service re-export shim.
  *
- * Routes import `getCandles` and friends from this module. Keeping the import
- * surface stable means a future provider swap (Alpha Vantage → Yahoo/Polygon)
- * is a one-file change here. See prd/alphaspace-clone-candles-alpha-vantage-prd.md §4.1.
+ * Keeping this file as a stable import surface means route files don't need
+ * changes when the underlying provider changes. The real implementation now
+ * lives in services/candles/ (provider directory).
+ *
+ * See prd/alphaspace-clone-candles-yahoo-and-chart-toggle-prd.md §5.1
  */
 
-export {
-  getCandles,
-  sliceCandles,
-  UnknownSymbolError,
-  QuotaExceededError,
-  UnexpectedResponseError,
-} from "./alphaVantage.js";
-export type { CandlesParams, FinnhubShapedCandles } from "./alphaVantage.js";
+export * from "./candles/index.js";

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, memo } from "react";
+import { useEffect, useRef, useState, useCallback, memo, useMemo } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   timeRangeToResolution,
   candleKeys,
 } from "@/lib/queries/market";
+import { candleQueryConfig } from "@/lib/queries/useCandles";
 import type { CandleData, TimeRange } from "@alpha/types";
 
 // ── Series colours ────────────────────────────────────────────────────────────
@@ -29,7 +30,7 @@ const COLORS = [
 
 const TIME_RANGES: TimeRange[] = ["1W", "1M", "3M", "YTD", "1Y", "5Y", "custom"];
 
-// ── Normalisation helper ──────────────────────────────────────────────────────
+// ── Normalisation helper (line mode — % change from first close) ──────────────
 function normalizeCandles(
   candles: CandleData
 ): Array<{ time: number; value: number }> {
@@ -55,21 +56,42 @@ function forwardFill(
   });
 }
 
-// ── Chart renderer (imperative TradingView Lightweight Charts) ─────────────────
+// ── OHLC helper (candle mode) ─────────────────────────────────────────────────
+function buildOhlcData(
+  candles: CandleData
+): Array<{ time: number; open: number; high: number; low: number; close: number }> {
+  if (candles.s !== "ok" || !candles.t.length) return [];
+  return candles.t.map((t, i) => ({
+    time: t,
+    open: candles.o[i] ?? 0,
+    high: candles.h[i] ?? 0,
+    low: candles.l[i] ?? 0,
+    close: candles.c[i] ?? 0,
+  }));
+}
+
+// ── Series data type ──────────────────────────────────────────────────────────
 interface SeriesEntry {
   ticker: string;
-  data: Array<{ time: number; value: number }>;
+  /** Normalised % change from first close — used in line mode */
+  lineData: Array<{ time: number; value: number }>;
+  /** Raw OHLC — used in candle mode (single-ticker only) */
+  ohlcData: Array<{ time: number; open: number; high: number; low: number; close: number }>;
   color: string;
 }
 
+// ── Chart renderer (imperative TradingView Lightweight Charts) ─────────────────
 const LightweightChart = memo(function LightweightChart({
   seriesData,
+  chartType,
 }: {
   seriesData: SeriesEntry[];
+  chartType: "line" | "candles";
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<unknown>(null);
   const seriesRefs = useRef<Map<string, unknown>>(new Map());
+  const prevChartTypeRef = useRef<"line" | "candles">(chartType);
 
   // Initialise chart once
   useEffect(() => {
@@ -117,13 +139,24 @@ const LightweightChart = memo(function LightweightChart({
     };
   }, []);
 
-  // Sync series data whenever it changes — add/update/remove without reinit
+  // Sync series data whenever seriesData or chartType changes
   useEffect(() => {
-    import("lightweight-charts").then(({ LineSeries }) => {
+    import("lightweight-charts").then(({ LineSeries, CandlestickSeries }) => {
       const chart = chartRef.current as ReturnType<
         typeof import("lightweight-charts")["createChart"]
       > | null;
       if (!chart) return;
+
+      const chartTypeChanged = prevChartTypeRef.current !== chartType;
+      if (chartTypeChanged) {
+        prevChartTypeRef.current = chartType;
+        // Remove all series — they are the wrong type for the new mode
+        for (const series of seriesRefs.current.values()) {
+          // @ts-expect-error lightweight-charts removeSeries is not typed on the chart object directly
+          chart.removeSeries(series);
+        }
+        seriesRefs.current.clear();
+      }
 
       const currentTickers = new Set(seriesData.map((s) => s.ticker));
       const prevTickers = new Set(seriesRefs.current.keys());
@@ -141,33 +174,63 @@ const LightweightChart = memo(function LightweightChart({
       }
 
       // Add new / update existing series
-      seriesData.forEach(({ ticker, data, color }) => {
-        const sorted = [...data].sort((a, b) => a.time - b.time);
-        const mapped = sorted.map((p) => ({
-          time: p.time as import("lightweight-charts").Time,
-          value: p.value,
-        }));
+      seriesData.forEach(({ ticker, lineData, ohlcData, color }) => {
+        if (chartType === "line") {
+          const sorted = [...lineData].sort((a, b) => a.time - b.time);
+          const mapped = sorted.map((p) => ({
+            time: p.time as import("lightweight-charts").Time,
+            value: p.value,
+          }));
 
-        if (seriesRefs.current.has(ticker)) {
-          const existing = seriesRefs.current.get(ticker) as
-            | { setData: (d: unknown) => void }
-            | undefined;
-          existing?.setData(mapped);
+          if (seriesRefs.current.has(ticker)) {
+            const existing = seriesRefs.current.get(ticker) as
+              | { setData: (d: unknown) => void }
+              | undefined;
+            existing?.setData(mapped);
+          } else {
+            const newSeries = chart.addSeries(LineSeries, {
+              color,
+              lineWidth: 2 as import("lightweight-charts").LineWidth,
+              title: ticker,
+              priceFormat: { type: "percent", precision: 2, minMove: 0.01 },
+            });
+            if (mapped.length > 0) newSeries.setData(mapped);
+            seriesRefs.current.set(ticker, newSeries);
+          }
         } else {
-          const newSeries = chart.addSeries(LineSeries, {
-            color,
-            lineWidth: 2 as import("lightweight-charts").LineWidth,
-            title: ticker,
-            priceFormat: { type: "percent", precision: 2, minMove: 0.01 },
-          });
-          if (mapped.length > 0) newSeries.setData(mapped);
-          seriesRefs.current.set(ticker, newSeries);
+          // Candles mode — raw OHLC
+          const sorted = [...ohlcData].sort((a, b) => a.time - b.time);
+          const mapped = sorted.map((p) => ({
+            time: p.time as import("lightweight-charts").Time,
+            open: p.open,
+            high: p.high,
+            low: p.low,
+            close: p.close,
+          }));
+
+          if (seriesRefs.current.has(ticker)) {
+            const existing = seriesRefs.current.get(ticker) as
+              | { setData: (d: unknown) => void }
+              | undefined;
+            existing?.setData(mapped);
+          } else {
+            const newSeries = chart.addSeries(CandlestickSeries, {
+              upColor: "#22c55e",
+              downColor: "#ef4444",
+              borderVisible: false,
+              wickUpColor: "#22c55e",
+              wickDownColor: "#ef4444",
+              title: ticker,
+            });
+            if (mapped.length > 0) newSeries.setData(mapped);
+            seriesRefs.current.set(ticker, newSeries);
+          }
         }
       });
 
       if (seriesData.length > 0) chart.timeScale().fitContent();
     });
-  }, [seriesData]);
+  }, [seriesData, chartType]);
 
   return <div ref={containerRef} className="w-full h-full" />;
 });
@@ -180,6 +243,8 @@ interface ComparisonChartPanelProps {
   /** unix seconds — persisted in workspace layout for custom range survival across reload */
   customFrom?: number;
   customTo?: number;
+  /** Workspace-level chart type preference; ignored for multi-ticker (forced to line) */
+  chartType?: "line" | "candles";
 }
 
 export function ComparisonChartPanel({
@@ -188,6 +253,7 @@ export function ComparisonChartPanel({
   timeRange: initialTimeRange,
   customFrom: initialCustomFrom,
   customTo: initialCustomTo,
+  chartType = "line",
 }: ComparisonChartPanelProps) {
   const [chartTickers, setChartTickers] = useState<string[]>(initialTickers);
   const [timeRange, setTimeRange] = useState<TimeRange>(
@@ -216,18 +282,27 @@ export function ComparisonChartPanel({
     setTimeRange(storeTimeRange);
   }, [storeTimeRange]);
 
-  // Resolve query params once (memoised on timeRange / custom date change)
-  const customFromTs = customFromDate
-    ? Math.floor(new Date(customFromDate).getTime() / 1000)
-    : 0;
-  const customToTs = customToDate
-    ? Math.floor(new Date(customToDate).getTime() / 1000)
-    : 0;
-  const { from, to } =
-    timeRange === "custom" && customFromTs > 0 && customToTs > 0
+  // Multi-ticker rule: ≥2 tickers forces line regardless of workspace chartType
+  const effectiveChartType: "line" | "candles" =
+    chartTickers.length >= 2 ? "line" : chartType;
+  const candlesForced = chartTickers.length >= 2 && chartType === "candles";
+
+  // Resolve query params — memoised so queryKey stays stable across re-renders.
+  // Without useMemo, timeRangeToUnix() calls Date.now() on every render, changing
+  // `from`/`to` each second and creating a new queryKey — breaking dedup and
+  // preventing retry exhaustion (CANDLES-FE-RETRY-STORM).
+  const { from, to } = useMemo(() => {
+    const customFromTs = customFromDate
+      ? Math.floor(new Date(customFromDate).getTime() / 1000)
+      : 0;
+    const customToTs = customToDate
+      ? Math.floor(new Date(customToDate).getTime() / 1000)
+      : 0;
+    return timeRange === "custom" && customFromTs > 0 && customToTs > 0
       ? { from: customFromTs, to: customToTs }
       : timeRangeToUnix(timeRange);
-  const resolution = timeRangeToResolution(timeRange);
+  }, [timeRange, customFromDate, customToDate]);
+  const resolution = useMemo(() => timeRangeToResolution(timeRange), [timeRange]);
 
   // useQueries is a single hook call — safe to use with a dynamic array.
   // Each ticker has its own stable query key so removing one DOES NOT
@@ -247,12 +322,12 @@ export function ComparisonChartPanel({
           return data;
         });
       },
-      staleTime: 300_000,
       enabled: !!ticker,
+      ...candleQueryConfig,
     })),
   });
 
-  // Build merged time axis for forward-filling
+  // Build merged time axis for forward-filling (line mode)
   const allTimes = Array.from(
     new Set(
       results.flatMap((r) => {
@@ -269,7 +344,13 @@ export function ComparisonChartPanel({
       if (!r?.data || r.data.s !== "ok") return null;
       const normalized = normalizeCandles(r.data);
       const filled = forwardFill(normalized, allTimes);
-      return { ticker, data: filled, color: COLORS[i % COLORS.length] ?? "#3b82f6" };
+      const ohlc = buildOhlcData(r.data);
+      return {
+        ticker,
+        lineData: filled,
+        ohlcData: ohlc,
+        color: COLORS[i % COLORS.length] ?? "#3b82f6",
+      };
     })
     .filter((s): s is SeriesEntry => s !== null);
 
@@ -297,7 +378,14 @@ export function ComparisonChartPanel({
   );
 
   const anyLoading = results.some((r) => r.isLoading);
-  const anyError = results.some((r) => r.isError);
+  // "Permanent error" = isError set and not currently retrying
+  const anyPermanentError = results.some((r) => r.isError && !r.isFetching);
+
+  const handleRetryAll = useCallback(() => {
+    results.forEach((r) => {
+      if (r.isError) r.refetch();
+    });
+  }, [results]);
 
   return (
     <div className="flex flex-col gap-2 h-full" data-panel-id={panelId}>
@@ -339,6 +427,18 @@ export function ComparisonChartPanel({
           )}
         </div>
 
+        {/* Multi-ticker candles-disabled indicator */}
+        {candlesForced && (
+          <span
+            className="text-xs text-muted-foreground/60 border border-dashed border-muted-foreground/30 rounded px-1.5 py-0.5"
+            title="Candles only available for single-ticker charts"
+            aria-label="Candles disabled for multi-ticker charts"
+            data-testid="candles-disabled-badge"
+          >
+            Line only
+          </span>
+        )}
+
         {/* Ticker chips */}
         <div className="flex flex-wrap gap-1">
           {chartTickers.map((ticker, i) => (
@@ -375,12 +475,22 @@ export function ComparisonChartPanel({
         </form>
       </div>
 
-      {anyError && (
-        <p className="text-xs text-destructive shrink-0">
-          Failed to load some series. Check ticker symbols.
-        </p>
+      {anyPermanentError && (
+        <div
+          className="flex items-center gap-2 text-xs text-destructive shrink-0"
+          data-testid="chart-error-state"
+        >
+          <span>Chart data unavailable</span>
+          <button
+            onClick={handleRetryAll}
+            className="underline hover:no-underline focus:outline-none focus:ring-1 focus:ring-destructive rounded"
+            aria-label="Retry loading chart data"
+          >
+            Retry
+          </button>
+        </div>
       )}
-      {anyLoading && (
+      {anyLoading && !anyPermanentError && (
         <p className="text-xs text-muted-foreground shrink-0">Loading chart data…</p>
       )}
 
@@ -406,7 +516,10 @@ export function ComparisonChartPanel({
             Add tickers to compare performance
           </div>
         ) : (
-          <LightweightChart seriesData={seriesData} />
+          <LightweightChart
+            seriesData={seriesData}
+            chartType={effectiveChartType}
+          />
         )}
       </div>
     </div>

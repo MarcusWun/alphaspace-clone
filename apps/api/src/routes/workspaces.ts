@@ -104,7 +104,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
   // PUT /api/workspaces/:id
   fastify.put<{
     Params: { id: string };
-    Body: { name?: string; layout?: WorkspaceLayout };
+    Body: { name?: string; layout?: WorkspaceLayout; chartType?: string };
   }>(
     "/workspaces/:id",
     {
@@ -114,6 +114,7 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
           properties: {
             name: { type: "string", minLength: 1, maxLength: 100 },
             layout: LAYOUT_SCHEMA,
+            chartType: { type: "string", enum: ["line", "candles"] },
           },
         },
       },
@@ -126,12 +127,13 @@ export const workspaceRoutes: FastifyPluginAsync = async (fastify) => {
         return reply.status(404).send({ error: "Workspace not found" });
       }
 
-      const { name, layout } = request.body;
+      const { name, layout, chartType } = request.body;
       const updated = await prisma.workspace.update({
         where: { id: request.params.id },
         data: {
           ...(name !== undefined && { name }),
           ...(layout !== undefined && { layout: sanitizeLayout(layout) as unknown as Prisma.InputJsonValue }),
+          ...(chartType !== undefined && { chartType }),
         },
       });
       return reply.send({ data: updated });

@@ -7,6 +7,10 @@
 | 2026-10-05 | AUTH-MISMATCH: `apps/web/auth.ts` uses `session: { strategy: "jwt" }` (Auth.js JWE cookie, no Postgres session row). `apps/api/src/plugins/auth.ts` did `prisma.session.findUnique(...)` which always returned `null` because JWT strategy never writes session rows → every cookie-authenticated request returned 401. | `apps/api/src/plugins/auth.ts`, `apps/api/src/__tests__/auth.test.ts`, `apps/api/package.json`, `pnpm-lock.yaml` | `apps/api/src/__tests__/auth.test.ts` — 5 new JWE cases: valid HTTP cookie, valid HTTPS cookie, expired JWE, malformed cookie, wrong-secret JWE | (see commit on hotfix/web-api-auth-mismatch) | If any future refactor changes `session: { strategy: "jwt" }` in `apps/web/auth.ts`, the `verifySessionPlugin` in `apps/api/src/plugins/auth.ts` MUST be updated in the same commit — the `decode()` call is coupled to JWT strategy. |
 | 2026-10-05 | CANDLES-FINNHUB-403: Finnhub moved `/stock/candle` to a paid tier (upstream change in 2024). The free `FINNHUB_API_KEY` returns 403 "You don't have access to this resource" for every candle request → `GET /api/candles` returned 500 → every workspace chart stuck on "loading chart data". Masked since Phase 1 (2026-09-27) first by the workspace-seed 500, then by the auth 401. | `apps/api/src/services/finnhub.ts` (removed `getCandles`), `apps/api/src/services/alphaVantage.ts` (new), `apps/api/src/services/candles.ts` (new re-export), `apps/api/src/routes/market.ts`, `apps/api/src/__tests__/alphaVantage.test.ts` (new), `apps/api/src/__tests__/market.test.ts`, `apps/api/src/__tests__/finnhub.test.ts`, `apps/api/src/__tests__/setup.ts`, `.env.example`, `README.md`, `CONTRACTS.md` | 40 new unit tests in `alphaVantage.test.ts` covering resolution map, response transform (incl. defensive `*Time Series*` key picking, ascending sort, invalid-row drop, no_data fallback), error payload classification (unknown symbol / quota / unexpected), cache hit path, per-resolution TTL (24h D/W/M, 5min intraday), rate-limit cool-off window, API-key leak scrub. 3 new route-level tests in `market.test.ts` covering 200 Finnhub-shaped payload from Alpha Vantage, 200 `{s:"no_data"}` for unknown symbol, 429 rate-limited. | (see PR against main) | Swap candle provider via `services/candles.ts` re-export — route layer must stay provider-agnostic. If `apps/web/*` ever reaches past `/api/candles` into the service layer (it shouldn't), that import path becomes the choke point for future provider swaps. Alpha Vantage free tier is 25 req/day; the 24h D/W/M cache keeps a single user comfortably under the cap. |
 
+| 2026-10-06 | CANDLES-FE-RETRY-STORM: `ComparisonChartPanel` computed `from`/`to` timestamps via `timeRangeToUnix()` (which calls `Date.now()`) on every render without `useMemo`. The queryKey `["candles", symbol, resolution, from, to]` changed every second as `Date.now()` advanced during retry delays. TanStack Query treated each new key as a new query — the old query was abandoned, retries reset to 0, and the query never exhausted. Effect: the chart showed a permanent loading spinner; the "Chart data unavailable" error state was never reached. AV's 429 sentinel was also refreshed on every reset, compounding the AV rate-limit bug. | `apps/web/components/panels/ComparisonChartPanel.tsx` | `apps/web/__tests__/chartToggle.test.tsx` — "shows 'Chart data unavailable' with Retry button after all retries exhausted" (times out if from/to are unstable; passes in 7s with memoised keys). "Retry button triggers a fresh fetch and clears error on success". | (this commit) | ALWAYS wrap `timeRangeToUnix()` (and any `Date.now()`-derived param) in `useMemo` keyed on `[timeRange, customFromDate, customToDate]` before using the result in a queryKey. A queryKey containing an unstable value creates a new query every render — the query never accumulates failure count and retries never exhaust. |
+
+| 2026-10-06 | CANDLES-AV-OUTPUTSIZE-FULL: `apps/api/src/services/alphaVantage.ts` hardcoded `outputsize=full` in the AV query. `outputsize=full` is a premium-tier feature; free-tier keys return a 200 with `{"Information": "..."}` → `classifyPayload` correctly identifies this as quota exhaustion → sets `alphavantage:ratelimited` sentinel for 60s → subsequent candle requests short-circuit to 429. Because the frontend kept retrying on 429, every retry refreshed the sentinel → permanent broken state: no candle data ever loads. | `apps/api/src/services/alphaVantage.ts` (removed, moved), `apps/api/src/services/candles/alphaVantage.ts` (new), `apps/api/src/services/candles/index.ts`, `apps/api/src/services/candles/yahoo.ts`, `apps/api/src/services/candles/types.ts`, `apps/api/src/services/candles/errors.ts`, `apps/api/src/services/candles.ts`, `.env.example`, `docker-compose.yml`, `CONTRACTS.md` | `apps/api/src/__tests__/alphaVantage.test.ts` — "request URL does NOT contain outputsize=full (CANDLES-AV-OUTPUTSIZE-FULL regression)" test asserts URL passed to fetch never contains `outputsize`. "SENTINEL CHECK: short-circuits with QuotaExceededError and never enqueues when sentinel is set" asserts fetch is never called when sentinel is active. | (see commit on feat/candles-yahoo-and-chart-toggle) | (1) Never add `outputsize=full` to AV queries — it is a premium feature. The free-tier compact response (last 100 bars) is sufficient and is what AV returns by default. (2) Always test request shape against free-tier docs before shipping. (3) Yahoo Finance 2 is now the default provider; AV is a fallback only. |
+
 ---
 
 ## WORKSPACES-500 (2026-09-30)
@@ -129,6 +133,53 @@ In `apps/api/src/__tests__/auth.test.ts`:
 ### Prevention
 
 If any future refactor changes `session: { strategy: "jwt" }` in `apps/web/auth.ts` (e.g. switching to DB strategy), the `decode()` call in `apps/api/src/plugins/auth.ts` must be updated in the same commit. A warning comment is present in the plugin.
+
+---
+
+## CANDLES-AV-OUTPUTSIZE-FULL (2026-10-06)
+
+### Symptoms
+
+All candle requests on every workspace returned HTTP 429 after the first chart load. Refreshing the page continued to return 429. The 60-second cool-off sentinel never cleared because the frontend retry loop kept refreshing it.
+
+### Root Cause
+
+`alphaVantageFetch()` in `services/alphaVantage.ts` included `outputsize=full` in every AV request:
+
+```typescript
+url.searchParams.set("outputsize", "full");
+```
+
+`outputsize=full` is a **premium-tier** parameter. Alpha Vantage free-tier keys return HTTP 200 with:
+```json
+{ "Information": "Thank you for using Alpha Vantage! This is a premium endpoint..." }
+```
+
+`classifyPayload()` correctly identifies `Information` as quota exhaustion → calls `redis.set("alphavantage:ratelimited", "1", "EX", 60)`. Because the frontend was retrying on 429, every retry hit the route → route threw QuotaExceededError (sentinel check) → returned 429 → frontend retried → refreshed the sentinel. Permanent broken state: sentinel was kept alive indefinitely.
+
+### Why It Was Also a Provider Architecture Issue
+
+The real fix is that Yahoo Finance 2 is now the default provider (`CANDLES_PROVIDER=yahoo`). Alpha Vantage is retained as a fallback only, with the `outputsize=full` bug fixed in the rewritten `services/candles/alphaVantage.ts`.
+
+### Fix Summary
+
+1. Removed `url.searchParams.set("outputsize", "full")` from `alphaVantageFetch()`.
+2. Changed PQueue from `intervalCap: 5, interval: 60_000` to `intervalCap: 1, interval: ~1000ms` (1 req/sec, matching actual free-tier burst limit).
+3. Created `services/candles/` provider directory with Yahoo as default.
+4. Updated cache key to include `from:to` so distinct windows don't collide.
+5. Confirmed sentinel check is BEFORE `queue.add()` — added regression test.
+
+### Regression Tests Added
+
+In `apps/api/src/__tests__/alphaVantage.test.ts`:
+- "request URL does NOT contain outputsize=full (CANDLES-AV-OUTPUTSIZE-FULL regression)" — captures the URL argument to `fetch` and asserts no `outputsize` param.
+- "SENTINEL CHECK: short-circuits with QuotaExceededError and never enqueues when sentinel is set" — asserts `fetch` is never called when the sentinel Redis key is set.
+
+### Prevention
+
+1. **Never use `outputsize=full`** on Alpha Vantage free-tier keys. The compact response (last 100 bars) is what the free tier provides by default.
+2. **Test request shape against free-tier docs before shipping** any provider integration.
+3. **Yahoo Finance 2 is now the default.** AV is a fallback only — set `CANDLES_PROVIDER=alphaVantage` in `.env` to activate it. Demoing with AV against a single workspace will exhaust 25 req/day quickly.
 
 ---
 
