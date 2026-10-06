@@ -76,6 +76,7 @@ model Workspace {
   userId    String   @map("user_id")
   name      String
   layout    Json     @default("{}")
+  chartType String   @default("line") @map("chart_type")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

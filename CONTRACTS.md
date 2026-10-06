@@ -25,17 +25,41 @@ Exception: `/healthz` is public.
 
 ---
 
-### Market Data (Finnhub quote/news/fundamentals, Alpha Vantage candles)
+### Market Data (Finnhub quote/news/fundamentals, Yahoo Finance candles)
+
+#### Candle provider abstraction
+
+The candles service selects its upstream provider via `CANDLES_PROVIDER` env var:
+
+| Value | Provider | Notes |
+|---|---|---|
+| `yahoo` (default) | `yahoo-finance2` npm package | No API key required; uses historical()/chart() |
+| `alphaVantage` | Alpha Vantage API | Requires `ALPHA_VANTAGE_API_KEY`; hard-fail at startup if key missing |
+
+**Provider interface** (`services/candles/types.ts`):
+```ts
+interface CandlesProvider {
+  name: "yahoo" | "alphaVantage";
+  getCandles(params: CandlesParams): Promise<CandlesResponse>;
+}
+interface CandlesParams { symbol: string; resolution: string; from: number; to: number; }
+interface CandlesResponse { s: "ok" | "no_data"; t?: number[]; o?: number[]; h?: number[]; l?: number[]; c?: number[]; v?: number[]; }
+```
+
+**Startup log:** `[candles] provider=yahoo` or `[candles] provider=alphaVantage` — confirms active provider after restart.
+
+**Redis cache key scheme:** `<provider>:candles:<symbol>:<resolution>:<from>:<to>` (includes from/to to prevent window collisions).
 
 #### `GET /api/candles`
 - **Auth:** required
 - **Query params:** `symbol` (string), `resolution` (enum: `1|5|15|30|60|D|W|M`), `from` (unix timestamp string), `to` (unix timestamp string)
 - **Response 200 (success):** `{ "data": { s:"ok", t:number[], o:number[], h:number[], l:number[], c:number[], v:number[] } }` — Finnhub-shaped envelope (unchanged for the frontend)
 - **Response 200 (unknown symbol):** `{ "data": { s:"no_data", t:[], o:[], h:[], l:[], c:[], v:[] } }` — matches Finnhub's `s:"no_data"` sentinel
-- **Response 429 (rate limited):** `{ "data": { s:"error", reason:"rate_limited" } }` — Alpha Vantage daily quota (25 req/day free tier) exhausted; cached as a 60s cool-off window
-- **Errors:** 400 (invalid params), 401, 429, 502 (upstream provider returned unexpected shape)
-- **Upstream:** Alpha Vantage (`TIME_SERIES_DAILY|WEEKLY|MONTHLY|INTRADAY`). Finnhub `/stock/candle` moved to a paid tier (2024).
-- **Cache:** Redis, 24h TTL for D/W/M, 5min for intraday. Service caches the full history per `(symbol, resolution)`; route slices to the `from…to` window.
+- **Response 429 (rate limited):** `{ "data": { s:"error", reason:"rate_limited" } }` — Alpha Vantage daily quota exhausted (only when provider=alphaVantage); 60s cool-off window
+- **Response 502:** upstream provider returned unexpected shape or threw non-recoverable error
+- **Errors:** 400 (invalid params), 401, 429, 502
+- **Default upstream:** Yahoo Finance 2. Set `CANDLES_PROVIDER=alphaVantage` + restart to fall back.
+- **Cache:** Redis, 24h TTL for D/W/M, 5min for intraday. Keyed by `(provider, symbol, resolution, from, to)`.
 
 #### `GET /api/quote`
 - **Auth:** required
@@ -79,9 +103,11 @@ Exception: `/healthz` is public.
 
 #### `PUT /api/workspaces/:id`
 - **Auth:** required (owner only)
-- **Body:** `{ "name"?: string, "layout"?: WorkspaceLayout }`
-- **Response 200:** `{ "data": Workspace }`
+- **Body:** `{ "name"?: string, "layout"?: WorkspaceLayout, "chartType"?: "line" | "candles" }`
+- **Response 200:** `{ "data": Workspace }` — includes `chartType` field
+- **Validation:** `chartType` must be `"line"` or `"candles"`; any other value → 400
 - **Layout handling:** `sanitizeLayout()` drops grid items whose `i` doesn't match a panel ID
+- **`Workspace.chartType`:** persisted DB field (`String @default("line") @map("chart_type")`); frontend reads this to initialize the Line/Candles toggle
 
 #### `DELETE /api/workspaces/:id`
 - **Auth:** required (owner only)

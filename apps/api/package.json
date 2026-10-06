@@ -26,6 +26,7 @@
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.0",
     "p-queue": "^9.0.0",
+    "yahoo-finance2": "^2.13.3",
     "pino": "^9.5.0",
     "ws": "^8.18.0"
   },

@@ -1,41 +1,39 @@
 /**
- * Alpha Vantage candle proxy service
+ * Alpha Vantage candle provider (fallback when CANDLES_PROVIDER=alphaVantage).
  *
- * Why: Finnhub moved /stock/candle to a paid tier (upstream change in 2024).
- * The free tier still serves quote/news/fundamentals, so those stay on Finnhub.
- * Alpha Vantage replaces /stock/candle for historical OHLC data only.
+ * Moved from services/alphaVantage.ts and updated per PRD §2 decision:
+ *  - Removed outputsize=full (was a premium feature → returned Information payload
+ *    → set ratelimited sentinel → permanent broken state). Bug: CANDLES-AV-OUTPUTSIZE-FULL.
+ *  - PQueue tightened to 1 req/sec (was 5/min burst which still exceeded AV free tier).
+ *  - Cache key now includes from/to so distinct windows don't collide.
+ *  - Startup hard-fail if CANDLES_PROVIDER=alphaVantage and key is missing.
  *
- * - ALPHA_VANTAGE_API_KEY is server-side only; never surfaced in responses.
- * - PQueue: 5 req/min to stay under Alpha Vantage's free-tier burst cap.
- * - Redis cache: 24h for D/W/M (daily/weekly/monthly), 5min for intraday.
- *   outputsize=full returns 20+ years, so one call per (symbol, resolution)
- *   per day serves every from/to window the user requests that day.
- * - Alpha Vantage returns 200 with Note/Information payloads for quota and
- *   premium-gate messages. The service converts those into typed errors; the
- *   route handler maps them to HTTP 200/429/502 per PRD §4.4.
+ * Sentinel invariant: the ratelimited sentinel is ALWAYS checked before the request
+ * is enqueued. If the sentinel is set, we throw immediately without touching the queue.
  *
- * See prd/alphaspace-clone-candles-alpha-vantage-prd.md
+ * See prd/alphaspace-clone-candles-yahoo-and-chart-toggle-prd.md §5.1
  */
 
 import PQueue from "p-queue";
-import { getRedis } from "./redis.js";
+import { getRedis } from "../redis.js";
+import type { CandlesParams, CandlesResponse, CandlesProvider } from "./types.js";
 
 const ALPHA_VANTAGE_BASE = "https://www.alphavantage.co/query";
 
-// Hard-fail at startup if the key is missing (same pattern as getFinnhubKey)
+// Hard-fail at startup if the key is missing
 function getAlphaVantageKey(): string {
   const key = process.env["ALPHA_VANTAGE_API_KEY"];
   if (!key) throw new Error("ALPHA_VANTAGE_API_KEY environment variable is not set");
   return key;
 }
 
-// Free-tier burst is 5/min; daily cap is 25/day (managed via Redis cache).
-// Overridable via env for tests so parallel/sequential test cases don't
-// serialize through the 60s window; default stays 5/min in prod.
-const BURST_PER_MINUTE = Number(process.env["ALPHA_VANTAGE_BURST_PER_MINUTE"] ?? "5");
-const queue = new PQueue({ intervalCap: BURST_PER_MINUTE, interval: 60_000 });
+// Free-tier: 1 req/sec. Overridable via ALPHA_VANTAGE_BURST_PER_MINUTE for tests.
+// Tests set ALPHA_VANTAGE_BURST_PER_MINUTE=10000 → intervalMs≈6ms (effectively unlimited).
+const BURST_PER_MINUTE = Number(process.env["ALPHA_VANTAGE_BURST_PER_MINUTE"] ?? "60");
+const intervalMs = Math.max(1, Math.round(60_000 / BURST_PER_MINUTE));
+const queue = new PQueue({ intervalCap: 1, interval: intervalMs });
 
-// ─── Typed service errors ────────────────────────────────────────────────────
+// ─── Typed service errors ─────────────────────────────────────────────────────
 
 export class UnknownSymbolError extends Error {
   constructor(symbol: string) {
@@ -58,26 +56,7 @@ export class UnexpectedResponseError extends Error {
   }
 }
 
-// ─── Public types ────────────────────────────────────────────────────────────
-
-export interface CandlesParams {
-  symbol: string;
-  resolution: string;
-  from: string;
-  to: string;
-}
-
-export interface FinnhubShapedCandles {
-  s: "ok" | "no_data";
-  t: number[];
-  o: number[];
-  h: number[];
-  l: number[];
-  c: number[];
-  v: number[];
-}
-
-// ─── Resolution map (PRD §4.2) ───────────────────────────────────────────────
+// ─── Resolution map ───────────────────────────────────────────────────────────
 
 interface AlphaVantageQuery {
   function: string;
@@ -111,7 +90,7 @@ export function isIntradayResolution(resolution: string): boolean {
   return ["1", "5", "15", "30", "60"].includes(resolution);
 }
 
-// ─── Response transform (PRD §4.3) ───────────────────────────────────────────
+// ─── Response transform ───────────────────────────────────────────────────────
 
 interface AlphaVantageBar {
   "1. open"?: string;
@@ -123,15 +102,12 @@ interface AlphaVantageBar {
 
 /**
  * Transform Alpha Vantage payload → Finnhub-shaped candles.
- *
- * Rules:
- *  - Picks the first `*Time Series*` key defensively (Alpha Vantage has
- *    renamed keys in the past: "Time Series (Daily)" vs "Time Series Daily").
- *  - Sort ascending by timestamp (Alpha Vantage returns descending).
- *  - Invalid rows (NaN after parse) are dropped.
- *  - Missing `*Time Series*` key → returns `{s:"no_data"}`.
+ * - Picks the first `*Time Series*` key defensively.
+ * - Sorts ascending (AV returns descending).
+ * - Drops rows with NaN values.
+ * - Missing time-series key → {s:"no_data"}.
  */
-export function transformCandles(payload: unknown): FinnhubShapedCandles {
+export function transformCandles(payload: unknown): CandlesResponse {
   if (!payload || typeof payload !== "object") {
     return emptyNoData();
   }
@@ -185,30 +161,19 @@ export function transformCandles(payload: unknown): FinnhubShapedCandles {
   };
 }
 
-function emptyNoData(): FinnhubShapedCandles {
+function emptyNoData(): CandlesResponse {
   return { s: "no_data", t: [], o: [], h: [], l: [], c: [], v: [] };
 }
 
-// ─── Error payload detection (PRD §4.4) ──────────────────────────────────────
+// ─── Error payload detection ──────────────────────────────────────────────────
 
-/**
- * Classify an Alpha Vantage 200-response payload. Alpha Vantage never returns
- * HTTP errors for quota exhaustion — it returns 200 with hint strings.
- *
- * Detection order:
- *   1. `Error Message` → UnknownSymbolError
- *   2. `Note` / `Information` → QuotaExceededError
- *   3. no `*Time Series*` key → UnexpectedResponseError
- *   4. otherwise → ok
- */
-export function classifyPayload(
-  payload: unknown,
-  symbol: string
-):
+type ErrorClassification =
   | { kind: "ok" }
   | { kind: "unknown_symbol"; error: UnknownSymbolError }
   | { kind: "quota"; error: QuotaExceededError }
-  | { kind: "unexpected"; error: UnexpectedResponseError } {
+  | { kind: "unexpected"; error: UnexpectedResponseError };
+
+export function classifyPayload(payload: unknown, symbol: string): ErrorClassification {
   if (!payload || typeof payload !== "object") {
     return {
       kind: "unexpected",
@@ -241,30 +206,35 @@ export function classifyPayload(
   return { kind: "ok" };
 }
 
-// ─── Cache helpers ───────────────────────────────────────────────────────────
+// ─── Cache helpers ────────────────────────────────────────────────────────────
 
 const RATE_LIMIT_KEY = "alphavantage:ratelimited";
 
-function cacheKeyFor(symbol: string, resolution: string): string {
-  return `alphavantage:candles:${symbol}:${resolution}`;
+/**
+ * Cache key includes from+to so distinct request windows don't collide.
+ * AV returns the last 100 bars regardless of from/to; we slice and cache
+ * the sliced result so the cache TTL is bounded by the window.
+ */
+function cacheKeyFor(symbol: string, resolution: string, from: number, to: number): string {
+  return `alphavantage:candles:${symbol}:${resolution}:${from}:${to}`;
 }
 
 function ttlFor(resolution: string): number {
   return isIntradayResolution(resolution) ? 300 : 86_400;
 }
 
-// ─── Low-level fetch ─────────────────────────────────────────────────────────
+// ─── Low-level fetch ──────────────────────────────────────────────────────────
 
-async function alphaVantageFetch(
-  query: AlphaVantageQuery,
-  symbol: string
-): Promise<unknown> {
+async function alphaVantageFetch(query: AlphaVantageQuery, symbol: string): Promise<unknown> {
   const key = getAlphaVantageKey();
   const url = new URL(ALPHA_VANTAGE_BASE);
   url.searchParams.set("function", query.function);
   url.searchParams.set("symbol", symbol);
   if (query.interval) url.searchParams.set("interval", query.interval);
-  url.searchParams.set("outputsize", "full");
+  // NOTE: outputsize=full intentionally omitted — it is a premium feature.
+  // Without it, AV returns compact (last 100 bars), which the free tier allows.
+  // Bug CANDLES-AV-OUTPUTSIZE-FULL: the previous outputsize=full caused AV to
+  // return an Information payload → service treated it as quota exhaustion.
   url.searchParams.set("datatype", "json");
   url.searchParams.set("apikey", key);
 
@@ -290,79 +260,14 @@ function scrubKey<T>(data: T): T {
   return JSON.parse(scrubbed) as T;
 }
 
-// ─── Public API ──────────────────────────────────────────────────────────────
+// ─── Slice helper ─────────────────────────────────────────────────────────────
 
 /**
- * Fetch full-history candles for a symbol, cached per (symbol, resolution).
- *
- * Returns the FULL cached payload (always Finnhub-shaped). The route handler
- * is responsible for slicing to the caller's from/to window — this keeps the
- * service free of callsite-specific coupling and preserves the one-upstream-
- * call-per-day cache invariant.
- *
- * Throws:
- *   - UnknownSymbolError  → route maps to 200 {s:"no_data"}
- *   - QuotaExceededError  → route maps to 429
- *   - UnexpectedResponseError → route maps to 502
+ * Slice a Finnhub-shaped full-history payload to the [from, to] window.
+ * Returns {s:"no_data"} if the slice is empty.
  */
-export async function getCandles(
-  params: CandlesParams
-): Promise<FinnhubShapedCandles> {
-  const redis = getRedis();
-
-  // 1. Short-circuit if we're inside the quota cool-off window
-  const cooling = await redis.get(RATE_LIMIT_KEY);
-  if (cooling) {
-    throw new QuotaExceededError("cooling-off window active");
-  }
-
-  // 2. Cache hit → return cached full-history
-  const cacheKey = cacheKeyFor(params.symbol, params.resolution);
-  const cached = await redis.get(cacheKey);
-  if (cached) {
-    return JSON.parse(cached) as FinnhubShapedCandles;
-  }
-
-  // 3. Cache miss → upstream call
-  const query = mapResolution(params.resolution);
-  const raw = await alphaVantageFetch(query, params.symbol);
-  const safe = scrubKey(raw);
-
-  const classification = classifyPayload(safe, params.symbol);
-
-  switch (classification.kind) {
-    case "quota":
-      // Latch the 60s cool-off so we stop burning requests
-      await redis.set(RATE_LIMIT_KEY, "1", "EX", 60);
-      throw classification.error;
-    case "unknown_symbol":
-      throw classification.error;
-    case "unexpected":
-      throw classification.error;
-    case "ok": {
-      const transformed = transformCandles(safe);
-      await redis.set(
-        cacheKey,
-        JSON.stringify(transformed),
-        "EX",
-        ttlFor(params.resolution)
-      );
-      return transformed;
-    }
-  }
-}
-
-/**
- * Slice a Finnhub-shaped full-history payload down to the [from, to]
- * (inclusive) unix-second window. Returns `{s:"no_data"}` if the slice is
- * empty, so the frontend's existing "no data" handling applies.
- */
-export function sliceCandles(
-  full: FinnhubShapedCandles,
-  from: number,
-  to: number
-): FinnhubShapedCandles {
-  if (full.s !== "ok") return full;
+export function sliceCandles(full: CandlesResponse, from: number, to: number): CandlesResponse {
+  if (full.s !== "ok" || !full.t) return full;
 
   const indices: number[] = [];
   for (let i = 0; i < full.t.length; i++) {
@@ -378,10 +283,72 @@ export function sliceCandles(
   return {
     s: "ok",
     t: pick(full.t),
-    o: pick(full.o),
-    h: pick(full.h),
-    l: pick(full.l),
-    c: pick(full.c),
-    v: pick(full.v),
+    o: pick(full.o ?? []),
+    h: pick(full.h ?? []),
+    l: pick(full.l ?? []),
+    c: pick(full.c ?? []),
+    v: pick(full.v ?? []),
   };
 }
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Fetch candles from Alpha Vantage (compact = last 100 bars), slice to the
+ * requested [from, to] window, and cache the sliced result.
+ *
+ * Sentinel invariant: the ratelimited sentinel is checked FIRST, before the
+ * request is enqueued — if cool-off is active we never touch the queue.
+ *
+ * Throws:
+ *   - UnknownSymbolError  → route maps to 200 {s:"no_data"}
+ *   - QuotaExceededError  → route maps to 429
+ *   - UnexpectedResponseError → route maps to 502
+ */
+async function getCandles(params: CandlesParams): Promise<CandlesResponse> {
+  const { symbol, resolution, from, to } = params;
+  const redis = getRedis();
+
+  // 1. CHECK SENTINEL FIRST — never enqueue if cool-off is active
+  const cooling = await redis.get(RATE_LIMIT_KEY);
+  if (cooling) {
+    throw new QuotaExceededError("cooling-off window active");
+  }
+
+  // 2. Cache hit
+  const cacheKey = cacheKeyFor(symbol, resolution, from, to);
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    return JSON.parse(cached) as CandlesResponse;
+  }
+
+  // 3. Cache miss → upstream fetch (enqueued AFTER sentinel check)
+  const query = mapResolution(resolution);
+  const raw = await alphaVantageFetch(query, symbol);
+  const safe = scrubKey(raw);
+
+  const classification = classifyPayload(safe, symbol);
+
+  switch (classification.kind) {
+    case "quota":
+      // Latch the 60s cool-off so we stop burning requests
+      await redis.set(RATE_LIMIT_KEY, "1", "EX", 60);
+      throw classification.error;
+    case "unknown_symbol":
+      throw classification.error;
+    case "unexpected":
+      throw classification.error;
+    case "ok": {
+      // Transform full compact response, then slice to the requested window
+      const full = transformCandles(safe);
+      const sliced = sliceCandles(full, from, to);
+      await redis.set(cacheKey, JSON.stringify(sliced), "EX", ttlFor(resolution));
+      return sliced;
+    }
+  }
+}
+
+export const alphaVantageProvider: CandlesProvider = {
+  name: "alphaVantage",
+  getCandles,
+};

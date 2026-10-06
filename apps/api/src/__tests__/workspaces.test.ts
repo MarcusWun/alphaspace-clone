@@ -233,6 +233,93 @@ describe("Workspace routes", () => {
     });
   });
 
+  // ─── Workspace.chartType persistence (PRD candles-yahoo-and-chart-toggle) ──
+  describe("PUT /api/workspaces/:id — chartType persistence", () => {
+    it("accepts chartType: 'line' and passes it to prisma update", async () => {
+      mockPrisma.workspace.findFirst.mockResolvedValue(sampleWorkspace);
+      mockPrisma.workspace.update.mockImplementation(({ data }) =>
+        Promise.resolve({ ...sampleWorkspace, ...data })
+      );
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/workspaces/ws-1",
+        headers: {
+          authorization: bearerFor(user1.id, user1.email),
+          "content-type": "application/json",
+        },
+        payload: { chartType: "line" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const updateCall = mockPrisma.workspace.update.mock.calls[0];
+      expect(updateCall?.[0]?.data?.chartType).toBe("line");
+      await app.close();
+    });
+
+    it("accepts chartType: 'candles' and passes it to prisma update", async () => {
+      mockPrisma.workspace.findFirst.mockResolvedValue(sampleWorkspace);
+      mockPrisma.workspace.update.mockImplementation(({ data }) =>
+        Promise.resolve({ ...sampleWorkspace, ...data })
+      );
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/workspaces/ws-1",
+        headers: {
+          authorization: bearerFor(user1.id, user1.email),
+          "content-type": "application/json",
+        },
+        payload: { chartType: "candles" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const updateCall = mockPrisma.workspace.update.mock.calls[0];
+      expect(updateCall?.[0]?.data?.chartType).toBe("candles");
+      await app.close();
+    });
+
+    it("rejects invalid chartType with 400 (not 500)", async () => {
+      mockPrisma.workspace.findFirst.mockResolvedValue(sampleWorkspace);
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/workspaces/ws-1",
+        headers: {
+          authorization: bearerFor(user1.id, user1.email),
+          "content-type": "application/json",
+        },
+        payload: { chartType: "xyz" },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(mockPrisma.workspace.update).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("does not require chartType (backward compat — field is optional)", async () => {
+      mockPrisma.workspace.findFirst.mockResolvedValue(sampleWorkspace);
+      mockPrisma.workspace.update.mockResolvedValue(sampleWorkspace);
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/workspaces/ws-1",
+        headers: {
+          authorization: bearerFor(user1.id, user1.email),
+          "content-type": "application/json",
+        },
+        payload: { name: "Updated Name" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      await app.close();
+    });
+  });
+
   // ─── PRD §3.4 regression — WORKSPACES-500 hotfix ─────────────────────────
   describe("GET /api/workspaces — first-login seed path (PRD §3.4 regression)", () => {
     it("returns 200 with seeded Semiconductors workspace for brand-new user", async () => {
