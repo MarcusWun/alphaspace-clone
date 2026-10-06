@@ -19,6 +19,8 @@ interface CanvasShellProps {
   initialLayout: WorkspaceLayout | null;
   /** Called with the new layout after any user change (debounced externally) */
   onLayoutChange: (layout: WorkspaceLayout) => void;
+  /** Workspace-level chart type; threaded down to comparison chart panels */
+  chartType?: "line" | "candles";
 }
 
 const COLS = 12;
@@ -27,7 +29,8 @@ const DEBOUNCE_MS = 300;
 
 function renderPanel(
   panel: PanelConfig,
-  onRemove: (id: string) => void
+  onRemove: (id: string) => void,
+  chartType: "line" | "candles"
 ) {
   const reg = PANEL_REGISTRY[panel.type];
   const title = panel.title ?? reg?.label ?? panel.type;
@@ -42,6 +45,7 @@ function renderPanel(
           panelId={panel.id}
           tickers={(panel.tickers as string[]) ?? []}
           timeRange={panel.timeRange ?? "1Y"}
+          chartType={chartType}
         />
       )}
       {panel.type === "news_feed" && (
@@ -60,6 +64,7 @@ export function CanvasShell({
   workspaceId,
   initialLayout,
   onLayoutChange,
+  chartType = "line",
 }: CanvasShellProps) {
   const [panels, setPanels] = useState<PanelConfig[]>(
     initialLayout?.panels ?? []
@@ -210,7 +215,7 @@ export function CanvasShell({
                 className={cn("overflow-hidden")}
                 data-testid={`panel-${panel.type}-${panel.id}`}
               >
-                {renderPanel(panel, removePanel)}
+                {renderPanel(panel, removePanel, chartType)}
               </div>
             ))}
           </GridLayout>

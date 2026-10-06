@@ -81,6 +81,7 @@ vi.mock("lightweight-charts", () => ({
   })),
   ColorType: { Solid: "solid" },
   LineSeries: {},
+  CandlestickSeries: {},
 }));
 
 import { ComparisonChartPanel } from "@/components/panels/ComparisonChartPanel";

@@ -186,6 +186,32 @@ interface LayoutItem {
 
 ---
 
+## Frontend Hook — `useCandles`
+
+**File:** `apps/web/lib/queries/useCandles.ts`
+
+**Purpose:** Fetches OHLCV candle data from `/api/candles` for a single ticker with stable queryKey, capped exponential backoff, and visible error state on exhaustion.
+
+**Signature:**
+```ts
+function useCandles(symbol: string, resolution: string, from: number, to: number): UseCandlesResult
+```
+
+**queryKey shape:** `["candles", symbol, resolution, from, to]` — array of primitives; TanStack Query deduplicates in-flight requests with identical keys automatically.
+
+**Retry semantics:**
+- Up to 3 retries on 5xx / network errors
+- Never retries on 4xx (unknown symbol, auth failure, etc.) — `error instanceof ApiError && statusCode 400–499` → no retry
+- Retry delays: `Math.min(1000 * 2^attempt, 10000) + Math.random() * 500` (capped at 10s + jitter)
+
+**Error state:** After 3 retries exhausted, `isError: true`. Callers render "Chart data unavailable" with a Retry button that calls `refetch()`.
+
+**Shared config object** (`candleQueryConfig`): spread into `useQueries` calls in `ComparisonChartPanel` for consistent behavior across single and multi-ticker charts.
+
+**Stability invariant:** The `from`/`to` params passed to `useCandles` (and to `useQueries` via `ComparisonChartPanel`) MUST be memoised (via `useMemo`) on the enclosing component. If `from`/`to` are computed from `Date.now()` on every render, the queryKey changes every second, breaking dedup and retry exhaustion. See `CANDLES-FE-RETRY-STORM` in BUG_LEDGER.md.
+
+---
+
 ## Zustand Store Shape (`useTickerStore`)
 
 ```typescript

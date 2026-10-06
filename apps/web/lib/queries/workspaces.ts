@@ -5,6 +5,7 @@ export interface Workspace {
   id: string;
   name: string;
   layout: WorkspaceLayout | null;
+  chartType: "line" | "candles";
   updatedAt: string;
   createdAt: string;
 }
@@ -43,7 +44,7 @@ export async function createWorkspace(name: string, layout?: WorkspaceLayout): P
 
 export async function updateWorkspace(
   id: string,
-  updates: { name?: string; layout?: WorkspaceLayout }
+  updates: { name?: string; layout?: WorkspaceLayout; chartType?: "line" | "candles" }
 ): Promise<Workspace> {
   const res = await apiClient.put<WorkspaceSingleResponse>(`/api/workspaces/${id}`, updates);
   return res.data;

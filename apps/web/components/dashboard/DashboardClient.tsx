@@ -23,12 +23,14 @@ const WORKSPACE_LOAD_TIMEOUT_MS = 10_000;
  * - Workspace switching
  * - Debounced layout autosave to PUT /api/workspaces/:id
  * - Passing last-saved timestamp to AppHeader
+ * - Chart type toggle (line | candles) — persisted per-workspace
  */
 export function DashboardClient() {
   const queryClient = useQueryClient();
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [timedOut, setTimedOut] = useState(false);
+  const [localChartType, setLocalChartType] = useState<"line" | "candles">("line");
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -80,6 +82,19 @@ export function DashboardClient() {
   })();
 
   const activeWorkspace = workspaces?.find((w) => w.id === resolvedId) ?? null;
+
+  // Sync localChartType from the active workspace whenever it changes
+  useEffect(() => {
+    setLocalChartType(activeWorkspace?.chartType ?? "line");
+  }, [activeWorkspace?.id, activeWorkspace?.chartType]);
+
+  // Candles disabled when any comparison chart in the layout has >= 2 tickers
+  const candlesDisabled = (activeWorkspace?.layout?.panels ?? []).some(
+    (p) =>
+      p.type === "comparison_chart" &&
+      Array.isArray(p.tickers) &&
+      (p.tickers as string[]).length >= 2
+  );
 
   const saveMutation = useMutation({
     mutationFn: ({
@@ -156,6 +171,9 @@ export function DashboardClient() {
         activeWorkspaceId={resolvedId}
         lastSavedAt={lastSavedAt}
         onWorkspaceChange={handleWorkspaceChange}
+        chartType={localChartType}
+        onChartTypeChange={setLocalChartType}
+        candlesDisabled={candlesDisabled}
       />
       {activeWorkspace && (
         <div className="flex-1 overflow-hidden">
@@ -164,6 +182,7 @@ export function DashboardClient() {
             workspaceId={activeWorkspace.id}
             initialLayout={activeWorkspace.layout}
             onLayoutChange={handleLayoutChange}
+            chartType={localChartType}
           />
         </div>
       )}
