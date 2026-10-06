@@ -1,34 +1,12 @@
-# Production compose — used by Deployment Agent on Geekom A9
+# Production overlay — used on Geekom A9
 # Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-version: "3.9"
+#
+# Public access is handled by the `cloudflared` service in docker-compose.yml
+# (Cloudflare Tunnel + Cloudflare Access). No host-level reverse proxy or TLS
+# termination runs on the A9. nginx + certbot were retired on 2026-10-05;
+# their legacy configs live under deploy/legacy/ for historical reference.
 
 services:
-  nginx:
-    image: nginx:1.25-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deploy/certbot/conf:/etc/letsencrypt:ro
-      - ./deploy/certbot/www:/var/www/certbot:ro
-    depends_on:
-      - web
-      - api
-    healthcheck:
-      test: ["CMD", "nginx", "-t"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  certbot:
-    image: certbot/certbot:latest
-    volumes:
-      - ./deploy/certbot/conf:/etc/letsencrypt
-      - ./deploy/certbot/www:/var/www/certbot
-    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot; sleep 12h & wait $${!}; done"
-
   api:
     environment:
       NODE_ENV: production
@@ -45,6 +23,8 @@ services:
         limits:
           memory: 1G
 
+  # In production, strip even the 127.0.0.1 host bindings from postgres/redis.
+  # They remain reachable on the internal Docker network for `api` / `web`.
   postgres:
     ports: []
 
