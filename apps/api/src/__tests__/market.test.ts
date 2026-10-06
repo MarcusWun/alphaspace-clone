@@ -11,26 +11,90 @@ function bearerFor(userId: string, email: string) {
 
 const authHeader = bearerFor("user-1", "test@example.com");
 
+// Candles are now served from Alpha Vantage (see candles-alpha-vantage PRD).
+// The upstream payload shape is `Time Series (Daily)` etc.; the route hands back
+// the Finnhub-shaped {c,h,l,o,t,v,s} envelope — unchanged frontend contract.
+
+const AV_BASE_TS = Math.floor(Date.parse("2026-10-03") / 1000);
+
+function alphaVantageDailyPayload() {
+  return {
+    "Meta Data": { "1. Information": "Daily Prices" },
+    "Time Series (Daily)": {
+      "2026-10-03": {
+        "1. open": "150.0", "2. high": "152.0", "3. low": "149.0",
+        "4. close": "151.0", "5. volume": "1000000",
+      },
+      "2026-10-02": {
+        "1. open": "148.0", "2. high": "151.0", "3. low": "147.5",
+        "4. close": "150.0", "5. volume": "900000",
+      },
+    },
+  };
+}
+
 describe("Market proxy routes", () => {
   describe("GET /api/candles", () => {
-    it("returns candle data for valid params", async () => {
-      const fakeCandles = { c: [100, 101], s: "ok", t: [1700000000, 1700086400] };
-      mockRedis.get.mockResolvedValueOnce(null);
+    it("returns Finnhub-shaped candle data from Alpha Vantage for valid params", async () => {
+      mockRedis.get.mockResolvedValue(null);
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
-        json: async () => fakeCandles,
+        json: async () => alphaVantageDailyPayload(),
       } as Response);
 
       const app = await buildApp();
       const res = await app.inject({
         method: "GET",
-        url: "/api/candles?symbol=AAPL&resolution=D&from=1700000000&to=1700086400",
+        url: `/api/candles?symbol=AAPL&resolution=D&from=${AV_BASE_TS - 86400}&to=${AV_BASE_TS + 86400}`,
         headers: { authorization: authHeader },
       });
 
       expect(res.statusCode).toBe(200);
-      const body = res.json<{ data: unknown }>();
-      expect(body.data).toBeDefined();
+      const body = res.json<{ data: { s: string; c: number[]; t: number[] } }>();
+      expect(body.data.s).toBe("ok");
+      expect(body.data.c.length).toBeGreaterThan(0);
+      expect(body.data.t.length).toBe(body.data.c.length);
+      await app.close();
+    });
+
+    it("returns 200 {s:'no_data'} for unknown symbol (Alpha Vantage Error Message)", async () => {
+      mockRedis.get.mockResolvedValue(null);
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ "Error Message": "Invalid API call" }),
+      } as Response);
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/candles?symbol=BOGUS&resolution=D&from=0&to=9999999999`,
+        headers: { authorization: authHeader },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{ data: { s: string } }>();
+      expect(body.data.s).toBe("no_data");
+      await app.close();
+    });
+
+    it("returns 429 when Alpha Vantage quota is exhausted (Note payload)", async () => {
+      mockRedis.get.mockResolvedValue(null);
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ Note: "Thank you for using Alpha Vantage! ...25 requests per day..." }),
+      } as Response);
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/candles?symbol=AAPL&resolution=D&from=0&to=9999999999`,
+        headers: { authorization: authHeader },
+      });
+
+      expect(res.statusCode).toBe(429);
+      const body = res.json<{ data: { s: string; reason: string } }>();
+      expect(body.data.s).toBe("error");
+      expect(body.data.reason).toBe("rate_limited");
       await app.close();
     });
 
@@ -55,19 +119,18 @@ describe("Market proxy routes", () => {
       await app.close();
     });
 
-    it("does not leak FINNHUB_API_KEY in response", async () => {
-      const key = process.env["FINNHUB_API_KEY"]!;
-      const fakeCandles = { c: [100], s: "ok", t: [1700000000] };
-      mockRedis.get.mockResolvedValueOnce(null);
+    it("does not leak ALPHA_VANTAGE_API_KEY in response", async () => {
+      const key = process.env["ALPHA_VANTAGE_API_KEY"]!;
+      mockRedis.get.mockResolvedValue(null);
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
-        json: async () => fakeCandles,
+        json: async () => alphaVantageDailyPayload(),
       } as Response);
 
       const app = await buildApp();
       const res = await app.inject({
         method: "GET",
-        url: "/api/candles?symbol=AAPL&resolution=D&from=1700000000&to=1700086400",
+        url: `/api/candles?symbol=AAPL&resolution=D&from=0&to=9999999999`,
         headers: { authorization: authHeader },
       });
 

@@ -12,6 +12,10 @@ import { vi, afterEach } from "vitest";
 process.env["AUTH_SECRET"] = "test-secret-32-bytes-long-enough-1234";
 process.env["AUTH_URL"] = "http://localhost:3000";
 process.env["FINNHUB_API_KEY"] = "test_finnhub_key_NOT_REAL";
+process.env["ALPHA_VANTAGE_API_KEY"] = "test_alphavantage_key_NOT_REAL";
+// Relax the Alpha Vantage PQueue cap so sequential/parallel test cases
+// don't serialize through the 60s burst window. See services/alphaVantage.ts.
+process.env["ALPHA_VANTAGE_BURST_PER_MINUTE"] = "10000";
 process.env["DATABASE_URL"] = "postgresql://alpha:alpha@localhost:5432/alpha_test";
 process.env["REDIS_URL"] = "redis://localhost:6379";
 process.env["NODE_ENV"] = "test";
