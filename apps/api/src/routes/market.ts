@@ -1,16 +1,28 @@
 /**
- * Market data proxy routes (Finnhub)
+ * Market data proxy routes.
  *
- * FINNHUB_API_KEY is server-side only — it must never appear in any response.
+ * - Candles are served by Alpha Vantage (via services/candles.js) because
+ *   Finnhub moved /stock/candle to a paid tier. The public contract
+ *   (GET /api/candles → Finnhub-shaped {c,h,l,o,t,v,s}) is unchanged.
+ * - Quote, news, and fundamentals stay on Finnhub (free tier still works).
+ *
+ * Secrets note: FINNHUB_API_KEY and ALPHA_VANTAGE_API_KEY are server-side
+ * only — they must never appear in any response body.
  */
 
 import { FastifyPluginAsync } from "fastify";
 import {
-  getCandles,
   getQuote,
   getCompanyNews,
   getFundamentals,
 } from "../services/finnhub.js";
+import {
+  getCandles,
+  sliceCandles,
+  UnknownSymbolError,
+  QuotaExceededError,
+  UnexpectedResponseError,
+} from "../services/candles.js";
 
 export const marketRoutes: FastifyPluginAsync = async (fastify) => {
   // GET /api/candles?symbol=&resolution=&from=&to=
@@ -38,8 +50,32 @@ export const marketRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     async (request, reply) => {
-      const data = await getCandles(request.query);
-      return reply.send({ data });
+      const { symbol, resolution, from, to } = request.query;
+      try {
+        const full = await getCandles({ symbol, resolution, from, to });
+        const sliced = sliceCandles(full, Number(from), Number(to));
+        return reply.send({ data: sliced });
+      } catch (err) {
+        // Map service errors to the public HTTP contract (PRD §4.4).
+        if (err instanceof UnknownSymbolError) {
+          // Match Finnhub's "no data" sentinel so the frontend needs no
+          // special-casing for unknown tickers.
+          return reply.send({
+            data: { s: "no_data", t: [], o: [], h: [], l: [], c: [], v: [] },
+          });
+        }
+        if (err instanceof QuotaExceededError) {
+          return reply
+            .code(429)
+            .send({ data: { s: "error", reason: "rate_limited" } });
+        }
+        if (err instanceof UnexpectedResponseError) {
+          return reply
+            .code(502)
+            .send({ error: "Upstream chart provider returned an unexpected response" });
+        }
+        throw err;
+      }
     }
   );
 

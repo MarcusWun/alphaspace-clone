@@ -19,7 +19,7 @@ Open `http://localhost:3000` for the web app and `http://localhost:3001` for the
 - **Database:** PostgreSQL 16 + Prisma ORM
 - **Cache:** Redis 7
 - **Auth:** Auth.js v5 (email magic-link + password credentials)
-- **Data:** Finnhub (quotes, candles, news, fundamentals)
+- **Data:** Finnhub (quotes, news, fundamentals), Alpha Vantage (candles)
 - **Deployment:** Docker Compose on Geekom A9 behind Nginx + Let's Encrypt
 
 ## Development

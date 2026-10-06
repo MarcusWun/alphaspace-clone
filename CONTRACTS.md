@@ -25,14 +25,17 @@ Exception: `/healthz` is public.
 
 ---
 
-### Market Data (Finnhub proxy)
+### Market Data (Finnhub quote/news/fundamentals, Alpha Vantage candles)
 
 #### `GET /api/candles`
 - **Auth:** required
 - **Query params:** `symbol` (string), `resolution` (enum: `1|5|15|30|60|D|W|M`), `from` (unix timestamp string), `to` (unix timestamp string)
-- **Response 200:** `{ "data": <FinnhubCandleResponse> }`
-- **Errors:** 400 (invalid params), 401, 429, 502 (Finnhub error)
-- **Cache:** Redis, TTL 300s
+- **Response 200 (success):** `{ "data": { s:"ok", t:number[], o:number[], h:number[], l:number[], c:number[], v:number[] } }` — Finnhub-shaped envelope (unchanged for the frontend)
+- **Response 200 (unknown symbol):** `{ "data": { s:"no_data", t:[], o:[], h:[], l:[], c:[], v:[] } }` — matches Finnhub's `s:"no_data"` sentinel
+- **Response 429 (rate limited):** `{ "data": { s:"error", reason:"rate_limited" } }` — Alpha Vantage daily quota (25 req/day free tier) exhausted; cached as a 60s cool-off window
+- **Errors:** 400 (invalid params), 401, 429, 502 (upstream provider returned unexpected shape)
+- **Upstream:** Alpha Vantage (`TIME_SERIES_DAILY|WEEKLY|MONTHLY|INTRADAY`). Finnhub `/stock/candle` moved to a paid tier (2024).
+- **Cache:** Redis, 24h TTL for D/W/M, 5min for intraday. Service caches the full history per `(symbol, resolution)`; route slices to the `from…to` window.
 
 #### `GET /api/quote`
 - **Auth:** required
@@ -52,7 +55,7 @@ Exception: `/healthz` is public.
 - **Response 200:** `{ "data": <FinnhubMetricResponse> }`
 - **Cache:** Redis, TTL 3600s
 
-**Security invariant:** `FINNHUB_API_KEY` must never appear in any of these response bodies.
+**Security invariant:** `FINNHUB_API_KEY` and `ALPHA_VANTAGE_API_KEY` must never appear in any of these response bodies.
 
 ---
 

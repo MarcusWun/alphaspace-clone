@@ -78,25 +78,12 @@ function scrubKey<T>(data: T): T {
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
-
-export interface CandlesParams {
-  symbol: string;
-  resolution: string;
-  from: string;
-  to: string;
-}
-
-export async function getCandles(params: CandlesParams): Promise<unknown> {
-  const cacheKey = `finnhub:candles:${params.symbol}:${params.resolution}:${params.from}:${params.to}`;
-  return cachedFetch(cacheKey, 300, () =>
-    finnhubFetch("/stock/candle", {
-      symbol: params.symbol,
-      resolution: params.resolution,
-      from: params.from,
-      to: params.to,
-    })
-  );
-}
+//
+// Note: `getCandles` was removed on 2026-10-05 (see
+// prd/alphaspace-clone-candles-alpha-vantage-prd.md) because Finnhub moved
+// /stock/candle to a paid tier. Candle data is now served by
+// `services/alphaVantage.ts` via `services/candles.ts`. Quote/news/fundamentals
+// remain on Finnhub — they still work on the free tier.
 
 export async function getQuote(symbol: string): Promise<unknown> {
   const cacheKey = `finnhub:quote:${symbol}`;
