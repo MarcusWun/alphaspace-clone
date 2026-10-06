@@ -4,6 +4,7 @@
 |------|-----------|----------------|-----------------|------------|-----------------|
 | — | — | — | — | — | Initial build — no bugs logged yet |
 | 2026-09-30 | WORKSPACES-500: Next.js rewrite proxy baked `http://localhost:3001` at build time; inside Docker web container `localhost` = self, not the API service → ECONNREFUSED → 500 for every `/api/*` request. | `apps/web/next.config.ts`, `apps/web/Dockerfile`, `docker-compose.yml`, `docker-compose.dev.yml`, `apps/api/src/app.ts` | `apps/api/src/__tests__/workspaces.test.ts` — "error handler logs err.stack and reqId on route errors" + "returns 200 with seeded Semiconductors workspace for brand-new user" | ead6809 (squash-merge of hotfix/workspace-seed-500, PR #1) | Server-side proxy destinations must use `INTERNAL_API_URL` (Docker service name), not `NEXT_PUBLIC_API_URL` (public LAN URL baked only at build time). |
+| 2026-10-05 | AUTH-MISMATCH: `apps/web/auth.ts` uses `session: { strategy: "jwt" }` (Auth.js JWE cookie, no Postgres session row). `apps/api/src/plugins/auth.ts` did `prisma.session.findUnique(...)` which always returned `null` because JWT strategy never writes session rows → every cookie-authenticated request returned 401. | `apps/api/src/plugins/auth.ts`, `apps/api/src/__tests__/auth.test.ts`, `apps/api/package.json`, `pnpm-lock.yaml` | `apps/api/src/__tests__/auth.test.ts` — 5 new JWE cases: valid HTTP cookie, valid HTTPS cookie, expired JWE, malformed cookie, wrong-secret JWE | (see commit on hotfix/web-api-auth-mismatch) | If any future refactor changes `session: { strategy: "jwt" }` in `apps/web/auth.ts`, the `verifySessionPlugin` in `apps/api/src/plugins/auth.ts` MUST be updated in the same commit — the `decode()` call is coupled to JWT strategy. |
 
 ---
 
@@ -73,6 +74,60 @@ Direct calls to `http://localhost:3001/api/workspaces` from the host machine wor
 ### Same-class bug search
 
 All `process.env["NEXT_PUBLIC_*"]` usages in server-side files audited. Only `NEXT_PUBLIC_API_URL` was used as a server-side proxy destination. All other `NEXT_PUBLIC_*` usages are in React component/hook code (client-safe). No other baked-URL proxy patterns found.
+
+---
+
+## AUTH-MISMATCH (2026-10-05)
+
+### Symptoms
+
+Every authenticated dashboard load returned HTTP 401 from `GET /api/workspaces`:
+```
+GET /api/workspaces → 401 Unauthorized (8ms)
+```
+Browser showed: "Could not load workspaces. Something went wrong on our end."
+
+### Root Cause
+
+`apps/web/auth.ts` configures Auth.js v5 with `session: { strategy: "jwt" }`. Under JWT strategy the session token is stored as a **JWE (encrypted JWT)** in a cookie (`__Secure-authjs.session-token` on HTTPS, `authjs.session-token` on HTTP). **No row is ever written to the Postgres `sessions` table**.
+
+`apps/api/src/plugins/auth.ts` (the `verifySessionPlugin`) was doing:
+```ts
+const session = await prisma.session.findUnique({ where: { sessionToken } });
+```
+Because JWT strategy never writes a `sessions` row, `findUnique` returned `null` → 401 for every cookie-authenticated request. The two services had been incompatible since Phase 1 (2026-09-27). The Bearer-JWT branch still worked (exercised by tests), masking the problem until actual browser sessions were tested.
+
+### Fix
+
+Replaced the `prisma.session.findUnique(...)` call with `decode()` from `@auth/core/jwt` (Auth.js's public JWE decoding API). The decoded payload provides `id` and `email` directly from the cookie. No DB lookup needed.
+
+Critical detail: the **salt** passed to `decode()` must equal the **cookie name** exactly. A mismatch causes a silent null return (not an error). The plugin now detects which cookie name was used and passes it as the salt:
+- `__Secure-authjs.session-token` → HTTPS path (Cloudflare, `https://alpha.wunderware.app`)
+- `authjs.session-token` → HTTP path (LAN, `http://192.168.0.162:3002`)
+
+`@auth/core` was pinned at exact version `0.41.3` (matching what `next-auth@5.0.0-beta.32` resolves) in `apps/api/package.json`.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `apps/api/src/plugins/auth.ts` | Removed `prisma` import + `prisma.session.findUnique`. Added `decode` from `@auth/core/jwt`. Rewrote cookie branch. |
+| `apps/api/src/__tests__/auth.test.ts` | Replaced Prisma-mock cookie tests with real JWE encode/decode fixtures. Added HTTPS cookie, expired, malformed, wrong-secret cases (+3 tests, 5→8). |
+| `apps/api/package.json` | Added `"@auth/core": "0.41.3"` (exact pin) to dependencies. |
+| `pnpm-lock.yaml` | Updated lockfile. |
+
+### Regression Tests Added
+
+In `apps/api/src/__tests__/auth.test.ts`:
+1. Valid JWE in `authjs.session-token` cookie → 200 (HTTP/LAN path)
+2. Valid JWE in `__Secure-authjs.session-token` cookie → 200 (HTTPS/Cloudflare path)
+3. Expired JWE (maxAge: -60, beyond 15s clockTolerance) → 401
+4. Malformed cookie value → 401
+5. JWE encoded with wrong secret → 401
+
+### Prevention
+
+If any future refactor changes `session: { strategy: "jwt" }` in `apps/web/auth.ts` (e.g. switching to DB strategy), the `decode()` call in `apps/api/src/plugins/auth.ts` must be updated in the same commit. A warning comment is present in the plugin.
 
 ---
 

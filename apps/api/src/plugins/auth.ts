@@ -1,8 +1,24 @@
 /**
  * verifySessionPlugin
  *
- * Validates the request against Auth.js session cookie (from Postgres sessions table)
+ * Validates the request against Auth.js session cookie (JWE decoded in-process)
  * OR a Bearer JWT signed with AUTH_SECRET for programmatic access.
+ *
+ * Cookie branch: Auth.js v5 with session: { strategy: "jwt" } writes the session
+ * as a JWE (encrypted JWT) in a cookie — NOT as a Postgres session row. The
+ * previous prisma.session.findUnique() lookup returned null for every request
+ * because no session rows are written under JWT strategy. We now decode the JWE
+ * directly using @auth/core/jwt decode(), which is Auth.js's own public API.
+ *
+ * IMPORTANT: The salt passed to decode() MUST equal the cookie name exactly.
+ *   - HTTPS path: "__Secure-authjs.session-token"
+ *   - HTTP/LAN path: "authjs.session-token"
+ * Mismatched salt → silent null return (not a thrown error).
+ *
+ * ⚠ WARNING: If a future refactor changes Auth.js session strategy (e.g. back to
+ * "database"), this plugin MUST be updated in the same commit. The decode() call
+ * below is tightly coupled to the web app's session: { strategy: "jwt" } setting
+ * in apps/web/auth.ts.
  *
  * Sets req.user = { id, email } on success.
  * Returns 401 on failure.
@@ -11,7 +27,7 @@
 import { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import jwt from "jsonwebtoken";
-import { prisma } from "@alpha/db";
+import { decode } from "@auth/core/jwt";
 
 export interface RequestUser {
   id: string;
@@ -25,6 +41,9 @@ declare module "fastify" {
   }
 }
 
+const SECURE_COOKIE_NAME = "__Secure-authjs.session-token";
+const PLAIN_COOKIE_NAME = "authjs.session-token";
+
 const verifySessionPluginImpl: FastifyPluginAsync = async (fastify) => {
   fastify.addHook("onRequest", async (request: FastifyRequest, reply) => {
     // Public endpoints skip authentication
@@ -36,7 +55,7 @@ const verifySessionPluginImpl: FastifyPluginAsync = async (fastify) => {
       return;
     }
 
-    // 1) Try Bearer JWT (programmatic access)
+    // 1) Try Bearer JWT (programmatic access) — unchanged
     const authHeader = request.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
       const token = authHeader.slice(7);
@@ -54,28 +73,51 @@ const verifySessionPluginImpl: FastifyPluginAsync = async (fastify) => {
       }
     }
 
-    // 2) Try Auth.js session cookie
+    // 2) Try Auth.js session cookie (JWE — decoded in-process, no DB lookup)
     const cookies = parseCookies(request.headers.cookie ?? "");
-    const sessionToken =
-      cookies["__Secure-authjs.session-token"] ??
-      cookies["authjs.session-token"];
 
-    if (!sessionToken) {
+    // Determine which cookie is present and record its name (= the salt).
+    // The salt MUST match the cookie name or decode() returns null silently.
+    let sessionToken: string | undefined;
+    let cookieName: string | undefined;
+
+    if (cookies[SECURE_COOKIE_NAME]) {
+      sessionToken = cookies[SECURE_COOKIE_NAME];
+      cookieName = SECURE_COOKIE_NAME;
+    } else if (cookies[PLAIN_COOKIE_NAME]) {
+      sessionToken = cookies[PLAIN_COOKIE_NAME];
+      cookieName = PLAIN_COOKIE_NAME;
+    }
+
+    if (!sessionToken || !cookieName) {
       reply.status(401).send({ error: "Unauthenticated" });
       return;
     }
 
-    const session = await prisma.session.findUnique({
-      where: { sessionToken },
-      include: { user: { select: { id: true, email: true } } },
-    });
+    try {
+      const payload = await decode({
+        token: sessionToken,
+        secret,
+        salt: cookieName,
+      });
 
-    if (!session || session.expires < new Date()) {
-      reply.status(401).send({ error: "Session expired or not found" });
-      return;
+      if (!payload) {
+        reply.status(401).send({ error: "Invalid or expired session" });
+        return;
+      }
+
+      const id = payload.id as string | undefined;
+      const email = payload.email as string | undefined;
+
+      if (!id || !email) {
+        reply.status(401).send({ error: "Invalid or expired session" });
+        return;
+      }
+
+      request.user = { id, email };
+    } catch {
+      reply.status(401).send({ error: "Invalid or expired session" });
     }
-
-    request.user = { id: session.user.id, email: session.user.email };
   });
 };
 

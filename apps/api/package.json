@@ -17,6 +17,7 @@
   "dependencies": {
     "@alpha/db": "workspace:*",
     "@alpha/types": "workspace:*",
+    "@auth/core": "0.41.3",
     "@fastify/cors": "^11.0.0",
     "@fastify/helmet": "^13.0.0",
     "@fastify/rate-limit": "^11.0.0",

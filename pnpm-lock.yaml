@@ -35,6 +35,9 @@ importers:
       '@alpha/types':
         specifier: workspace:*
         version: link:../../packages/types
+      '@auth/core':
+        specifier: 0.41.3
+        version: 0.41.3(nodemailer@8.0.11)
       '@fastify/cors':
         specifier: ^11.0.0
         version: 11.3.0
