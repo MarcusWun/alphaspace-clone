@@ -44,6 +44,7 @@ services:
       DATABASE_URL: postgresql://alpha:alpha@postgres:5432/alpha
       REDIS_URL: redis://redis:6379
       FINNHUB_API_KEY: ${FINNHUB_API_KEY}
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY}
       AUTH_SECRET: ${AUTH_SECRET}
       NODE_ENV: production
     depends_on:
