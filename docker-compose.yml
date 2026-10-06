@@ -17,7 +17,7 @@ services:
       retries: 5
       start_period: 10s
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
 
   redis:
     image: redis:7-alpine
@@ -31,7 +31,7 @@ services:
       timeout: 5s
       retries: 5
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   api:
     build:
@@ -39,7 +39,7 @@ services:
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"
     environment:
       DATABASE_URL: postgresql://alpha:alpha@postgres:5432/alpha
       REDIS_URL: redis://redis:6379
@@ -73,7 +73,7 @@ services:
       # occupies host :3000 on the LAN deployment machine, so we expose
       # the web app on :3002 to avoid a bind conflict. AUTH_URL in .env
       # must match this host port.
-      - "3002:3000"
+      - "0.0.0.0:3002:3000"
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
       AUTH_SECRET: ${AUTH_SECRET}
@@ -97,6 +97,18 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # cloudflared reads TUNNEL_TOKEN natively; keeps the token off the process
+      # command line (not visible via `ps`). Value comes from the host .env file.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      web:
+        condition: service_started
 
 volumes:
   postgres_data:
