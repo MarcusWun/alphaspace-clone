@@ -1,10 +1,10 @@
 /**
  * Route-level tests for market proxy endpoints.
  *
- * Candles now served by Yahoo Finance 2 by default (CANDLES_PROVIDER=yahoo).
- * These tests verify the route contract (HTTP shape, auth, param validation)
- * without testing provider-specific internals — see alphaVantage.test.ts and
- * yahoo.test.ts for provider unit tests.
+ * Candles now served by Yahoo Finance v3 (chart()-only, no historical).
+ * These tests verify the route contract (HTTP shape, auth, param validation,
+ * X-Candles-Status header, meta-field stripping) without testing provider
+ * internals — see yahoo.test.ts for provider unit tests.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -20,21 +20,20 @@ function bearerFor(userId: string, email: string) {
 
 const authHeader = bearerFor("user-1", "test@example.com");
 
-// Mock yahoo-finance2 at the route-test level so candle requests resolve
-// without hitting the real Yahoo API.
+// Mock yahoo-finance2 (v3 class-based API) at the route-test level
+const mockChartFn = vi.hoisted(() => vi.fn());
+
 vi.mock("yahoo-finance2", () => ({
-  default: {
-    historical: vi.fn(),
-    chart: vi.fn(),
-  },
+  default: vi.fn().mockImplementation(() => ({ chart: mockChartFn })),
 }));
 
-import yahooFinance from "yahoo-finance2";
-
-const MOCK_HISTORICAL_ROWS = [
-  { date: new Date("2026-10-02"), open: 148, high: 151, low: 147.5, close: 150, adjClose: 150, volume: 900_000 },
-  { date: new Date("2026-10-03"), open: 150, high: 152, low: 149, close: 151, adjClose: 151, volume: 1_000_000 },
-];
+// chart() result shape (ChartResultArray)
+const MOCK_CHART_RESULT = {
+  quotes: [
+    { date: new Date("2026-10-02"), open: 148, high: 151, low: 147.5, close: 150, volume: 900_000 },
+    { date: new Date("2026-10-03"), open: 150, high: 152, low: 149, close: 151, volume: 1_000_000 },
+  ],
+};
 
 const FROM_TS = Math.floor(Date.parse("2026-10-01") / 1000);
 const TO_TS = Math.floor(Date.parse("2026-10-05") / 1000);
@@ -43,7 +42,7 @@ describe("Market proxy routes", () => {
   describe("GET /api/candles", () => {
     it("returns Finnhub-shaped candle data for valid params (Yahoo provider)", async () => {
       mockRedis.get.mockResolvedValue(null);
-      vi.mocked(yahooFinance.historical).mockResolvedValue(MOCK_HISTORICAL_ROWS);
+      mockChartFn.mockResolvedValue(MOCK_CHART_RESULT);
 
       const app = await buildApp();
       const res = await app.inject({
@@ -62,7 +61,7 @@ describe("Market proxy routes", () => {
 
     it("returns 200 {s:'no_data'} when Yahoo returns empty data", async () => {
       mockRedis.get.mockResolvedValue(null);
-      vi.mocked(yahooFinance.historical).mockResolvedValue([]);
+      mockChartFn.mockResolvedValue({ quotes: [] });
 
       const app = await buildApp();
       const res = await app.inject({
@@ -79,7 +78,7 @@ describe("Market proxy routes", () => {
 
     it("returns 502 when Yahoo upstream throws a non-no-data error", async () => {
       mockRedis.get.mockResolvedValue(null);
-      vi.mocked(yahooFinance.historical).mockRejectedValue(new Error("Connection reset"));
+      mockChartFn.mockRejectedValue(new Error("Connection reset"));
 
       const app = await buildApp();
       const res = await app.inject({
@@ -116,7 +115,7 @@ describe("Market proxy routes", () => {
     it("does not leak ALPHA_VANTAGE_API_KEY in response (key-scrub regression)", async () => {
       const key = process.env["ALPHA_VANTAGE_API_KEY"]!;
       mockRedis.get.mockResolvedValue(null);
-      vi.mocked(yahooFinance.historical).mockResolvedValue(MOCK_HISTORICAL_ROWS);
+      mockChartFn.mockResolvedValue(MOCK_CHART_RESULT);
 
       const app = await buildApp();
       const res = await app.inject({
@@ -129,9 +128,8 @@ describe("Market proxy routes", () => {
       await app.close();
     });
 
-    it("returns cached payload and does not call provider on cache hit", async () => {
+    it("returns cached payload and does not call chart() on cache hit", async () => {
       const cachedPayload = { s: "ok", t: [FROM_TS], o: [100], h: [105], l: [98], c: [103], v: [1_000_000] };
-      // Return the cache hit for the candles key
       mockRedis.get.mockImplementation(async (key: string) => {
         if (key.startsWith("yahoo:candles:")) return JSON.stringify(cachedPayload);
         return null;
@@ -145,7 +143,50 @@ describe("Market proxy routes", () => {
       });
 
       expect(res.statusCode).toBe(200);
-      expect(vi.mocked(yahooFinance.historical)).not.toHaveBeenCalled();
+      expect(mockChartFn).not.toHaveBeenCalled();
+      await app.close();
+    });
+
+    it("sets X-Candles-Status: rate_limited header when service returns rateLimited:true", async () => {
+      // Sentinel active → service returns rateLimited:true, no_data
+      mockRedis.get.mockImplementation(async (key: string) => {
+        if (key === "yahoo:ratelimited") return "1";
+        return null; // no stale cache
+      });
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/candles?symbol=AAPL&resolution=D&from=${FROM_TS}&to=${TO_TS}`,
+        headers: { authorization: authHeader },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["x-candles-status"]).toBe("rate_limited");
+      await app.close();
+    });
+
+    it("does not include rateLimited or stale fields in JSON response body", async () => {
+      // Stale cache available so rateLimited+stale meta is set on the service response
+      const staleData = { s: "ok" as const, t: [FROM_TS], o: [100], h: [105], l: [98], c: [103], v: [1_000_000] };
+      mockRedis.get.mockImplementation(async (key: string) => {
+        if (key === "yahoo:ratelimited") return "1";
+        if (key.endsWith(":stale")) return JSON.stringify(staleData);
+        return null;
+      });
+
+      const app = await buildApp();
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/candles?symbol=AAPL&resolution=D&from=${FROM_TS}&to=${TO_TS}`,
+        headers: { authorization: authHeader },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = res.json<Record<string, unknown>>();
+      const data = body["data"] as Record<string, unknown>;
+      expect(data).not.toHaveProperty("rateLimited");
+      expect(data).not.toHaveProperty("stale");
       await app.close();
     });
   });

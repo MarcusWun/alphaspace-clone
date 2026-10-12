@@ -211,12 +211,16 @@ export function classifyPayload(payload: unknown, symbol: string): ErrorClassifi
 const RATE_LIMIT_KEY = "alphavantage:ratelimited";
 
 /**
- * Cache key includes from+to so distinct request windows don't collide.
- * AV returns the last 100 bars regardless of from/to; we slice and cache
- * the sliced result so the cache TTL is bounded by the window.
+ * Bucketed cache key — mirrors yahoo.ts bucketedKey approach for consistency.
+ * Day-bucket for D/W/M, 5-min bucket for intraday. No from/to in key.
+ * The route-level slicer narrows the cached full compact response to [from, to].
  */
-function cacheKeyFor(symbol: string, resolution: string, from: number, to: number): string {
-  return `alphavantage:candles:${symbol}:${resolution}:${from}:${to}`;
+function cacheKeyFor(symbol: string, resolution: string): string {
+  const now = Date.now();
+  const bucket = isIntradayResolution(resolution)
+    ? Math.floor(now / 300_000)    // 5-min bucket
+    : Math.floor(now / 86_400_000); // day bucket
+  return `alphavantage:candles:${symbol}:${resolution}:${bucket}`;
 }
 
 function ttlFor(resolution: string): number {
@@ -294,8 +298,8 @@ export function sliceCandles(full: CandlesResponse, from: number, to: number): C
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Fetch candles from Alpha Vantage (compact = last 100 bars), slice to the
- * requested [from, to] window, and cache the sliced result.
+ * Fetch candles from Alpha Vantage (compact = last 100 bars) and cache the
+ * full compact response. Route-level slicer narrows to the requested [from, to].
  *
  * Sentinel invariant: the ratelimited sentinel is checked FIRST, before the
  * request is enqueued — if cool-off is active we never touch the queue.
@@ -306,23 +310,27 @@ export function sliceCandles(full: CandlesResponse, from: number, to: number): C
  *   - UnexpectedResponseError → route maps to 502
  */
 async function getCandles(params: CandlesParams): Promise<CandlesResponse> {
-  const { symbol, resolution, from, to } = params;
+  const { symbol, resolution } = params;
   const redis = getRedis();
 
   // 1. CHECK SENTINEL FIRST — never enqueue if cool-off is active
   const cooling = await redis.get(RATE_LIMIT_KEY);
   if (cooling) {
+    console.log(JSON.stringify({ event: "candles.rate_limited", provider: "alphaVantage", ttl: 60 }));
     throw new QuotaExceededError("cooling-off window active");
   }
 
   // 2. Cache hit
-  const cacheKey = cacheKeyFor(symbol, resolution, from, to);
+  const cacheKey = cacheKeyFor(symbol, resolution);
   const cached = await redis.get(cacheKey);
   if (cached) {
+    console.log(JSON.stringify({ event: "candles.cache_hit", key: cacheKey, symbol, resolution }));
     return JSON.parse(cached) as CandlesResponse;
   }
+  console.log(JSON.stringify({ event: "candles.cache_miss", key: cacheKey, symbol, resolution }));
 
   // 3. Cache miss → upstream fetch (enqueued AFTER sentinel check)
+  console.log(JSON.stringify({ event: "candles.upstream_call", provider: "alphaVantage", symbol, resolution }));
   const query = mapResolution(resolution);
   const raw = await alphaVantageFetch(query, symbol);
   const safe = scrubKey(raw);
@@ -339,11 +347,10 @@ async function getCandles(params: CandlesParams): Promise<CandlesResponse> {
     case "unexpected":
       throw classification.error;
     case "ok": {
-      // Transform full compact response, then slice to the requested window
+      // Cache the full compact response; route-level slicer narrows to [from, to]
       const full = transformCandles(safe);
-      const sliced = sliceCandles(full, from, to);
-      await redis.set(cacheKey, JSON.stringify(sliced), "EX", ttlFor(resolution));
-      return sliced;
+      await redis.set(cacheKey, JSON.stringify(full), "EX", ttlFor(resolution));
+      return full;
     }
   }
 }

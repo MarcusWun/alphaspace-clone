@@ -4,18 +4,18 @@
  * Reads CANDLES_PROVIDER env var (default: "yahoo") and exports:
  *  - `candlesProvider` — the selected CandlesProvider instance
  *  - `getCandles`      — route-compatible wrapper (accepts string from/to)
- *  - `sliceCandles`    — passthrough filter for backward route compat
+ *  - `sliceCandles`    — real slicer: narrows {t,o,h,l,c,v} to [from, to], preserves meta
  *  - Error classes re-exported for the route error-mapping contract
  *
  * Startup hard-fail: if CANDLES_PROVIDER=alphaVantage and ALPHA_VANTAGE_API_KEY
  * is missing, an error is thrown during module initialization so the server
  * fails fast rather than silently falling back.
  *
- * See prd/alphaspace-clone-candles-yahoo-and-chart-toggle-prd.md §5.1, §5.2
+ * See prd/alphaspace-clone-candles-rate-limit-hardening-prd.md §5.1
  */
 
 import { yahooProvider } from "./yahoo.js";
-import { alphaVantageProvider, sliceCandles as avSliceCandles } from "./alphaVantage.js";
+import { alphaVantageProvider } from "./alphaVantage.js";
 import {
   UnknownSymbolError,
   QuotaExceededError,
@@ -77,9 +77,37 @@ export async function getCandles(params: {
   }
 }
 
-// Re-export sliceCandles so the route can still call it (it's now a no-op
-// passthrough since providers return pre-sliced results, but the route
-// contract is unchanged).
+// ─── Route-level slicer ───────────────────────────────────────────────────────
+//
+// Providers return a full envelope (Yahoo: 10y window, AV: 100-bar compact).
+// This slicer narrows to the requested [from, to] before sending to the client.
+// It preserves the rateLimited/stale meta flags so the route can set headers.
+
 export function sliceCandles(full: CandlesResponse, from: number, to: number): CandlesResponse {
-  return avSliceCandles(full, from, to);
+  if (full.s !== "ok" || !full.t) return full;
+
+  const indices: number[] = [];
+  for (let i = 0; i < full.t.length; i++) {
+    const ts = full.t[i];
+    if (ts !== undefined && ts >= from && ts <= to) indices.push(i);
+  }
+
+  if (indices.length === 0) {
+    return { s: "no_data", rateLimited: full.rateLimited, stale: full.stale };
+  }
+
+  const pick = (arr: number[] | undefined): number[] =>
+    (arr ? indices.map((i) => arr[i]!) : []).filter((v) => v !== undefined);
+
+  return {
+    s: "ok",
+    t: pick(full.t),
+    o: pick(full.o),
+    h: pick(full.h),
+    l: pick(full.l),
+    c: pick(full.c),
+    v: pick(full.v),
+    rateLimited: full.rateLimited,
+    stale: full.stale,
+  };
 }

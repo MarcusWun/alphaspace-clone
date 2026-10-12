@@ -54,7 +54,15 @@ export const marketRoutes: FastifyPluginAsync = async (fastify) => {
       try {
         const full = await getCandles({ symbol, resolution, from, to });
         const sliced = sliceCandles(full, Number(from), Number(to));
-        return reply.send({ data: sliced });
+
+        // Signal rate-limit to client via header; strip internal meta from body
+        if (sliced.rateLimited) {
+          reply.header("X-Candles-Status", "rate_limited");
+        }
+        const publicData = { ...sliced } as Record<string, unknown>;
+        delete publicData["rateLimited"];
+        delete publicData["stale"];
+        return reply.send({ data: publicData });
       } catch (err) {
         // Map service errors to the public HTTP contract (PRD §4.4).
         if (err instanceof UnknownSymbolError) {

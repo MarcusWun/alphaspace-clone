@@ -18,6 +18,9 @@ export interface CandlesResponse {
   l?: number[];
   c?: number[];
   v?: number[];
+  // Service-internal meta — stripped before HTTP response body (see market.ts)
+  rateLimited?: boolean; // provider is in rate-limit cool-off
+  stale?: boolean;       // data served from expired/stale cache
 }
 
 export interface CandlesProvider {
