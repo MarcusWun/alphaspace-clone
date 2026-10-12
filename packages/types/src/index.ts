@@ -35,7 +35,7 @@ export interface WorkspaceLayout {
 
 // ─── Time range ───────────────────────────────────────────────────────────────
 
-export type TimeRange = "1W" | "1M" | "3M" | "YTD" | "1Y" | "5Y" | "custom";
+export type TimeRange = "1D" | "1W" | "1M" | "3M" | "6M" | "YTD" | "1Y" | "5Y" | "custom";
 
 // ─── Market data ──────────────────────────────────────────────────────────────
 

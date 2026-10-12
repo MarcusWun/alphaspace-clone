@@ -22,7 +22,17 @@ function getFinnhubKey(): string {
 // Rate limiter: ≤ 60 req/min = 1 per second average
 const queue = new PQueue({ intervalCap: 60, interval: 60_000 });
 
-async function finnhubFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
+/** Typed error thrown by finnhubFetch; carries the upstream HTTP status code. */
+export class FinnhubError extends Error {
+  statusCode: number;
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.name = "FinnhubError";
+    this.statusCode = statusCode;
+  }
+}
+
+export async function finnhubFetch(path: string, params: Record<string, string> = {}): Promise<unknown> {
   const key = getFinnhubKey();
   const url = new URL(`${FINNHUB_BASE}${path}`);
   for (const [k, v] of Object.entries(params)) {
@@ -35,7 +45,7 @@ async function finnhubFetch(path: string, params: Record<string, string> = {}): 
       headers: { "User-Agent": "alpha-investment-workspace/1.0" },
     });
     if (!res.ok) {
-      throw new Error(`Finnhub error ${res.status}: ${res.statusText}`);
+      throw new FinnhubError(res.status, `Finnhub error ${res.status}: ${res.statusText}`);
     }
     return res.json() as Promise<unknown>;
   });
@@ -43,7 +53,7 @@ async function finnhubFetch(path: string, params: Record<string, string> = {}): 
   return response;
 }
 
-async function cachedFetch<T>(
+export async function cachedFetch<T>(
   cacheKey: string,
   ttlSeconds: number,
   fetcher: () => Promise<T>
@@ -61,6 +71,28 @@ async function cachedFetch<T>(
   const safe = scrubKey(data);
   await redis.set(cacheKey, JSON.stringify(safe), "EX", ttlSeconds);
   return safe as T;
+}
+
+/**
+ * Like cachedFetch but also returns the cache source so route handlers can emit
+ * structured observability logs (fundamentals.cache_hit / fundamentals.cache_miss).
+ */
+export async function cachedFetchWithMeta<T>(
+  cacheKey: string,
+  ttlSeconds: number,
+  fetcher: () => Promise<T>
+): Promise<{ data: T; source: "cache" | "upstream" }> {
+  const redis = getRedis();
+
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    return { data: JSON.parse(cached) as T, source: "cache" };
+  }
+
+  const data = await fetcher();
+  const safe = scrubKey(data);
+  await redis.set(cacheKey, JSON.stringify(safe), "EX", ttlSeconds);
+  return { data: safe as T, source: "upstream" };
 }
 
 /**
