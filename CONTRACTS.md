@@ -98,6 +98,66 @@ interface CandlesResponse {
 
 ---
 
+### Fundamentals (Phase 2a)
+
+All five routes are under the `/api/stock/*` prefix, auth-required, rate-limited globally.
+
+Shared implementation: `apps/api/src/services/fundamentals.ts` (five thin cached wrappers) + `apps/api/src/routes/fundamentals.ts` (five GET handlers). Both use the exported `finnhubFetch` and `cachedFetchWithMeta` from `services/finnhub.ts`. The PQueue instance (60 req/min free tier) is private in `finnhub.ts`; all callers share it transitively via `finnhubFetch`.
+
+**FinnhubError** (`services/finnhub.ts`) — typed error class; carries `statusCode: number`. Replaces the string-based `Error("Finnhub error 429: ...")` so route handlers can catch typed errors without message parsing.
+
+#### `GET /api/stock/metric`
+- **Auth:** required
+- **Query params:** `symbol` (string, required, minLength 1)
+- **200 response:** `{ "data": <FinnhubStockMetricResponse> }` — raw Finnhub `/stock/metric?metric=all` passthrough
+- **Sample 200:** `{ "data": { "metric": { "52WeekHigh": 502.66, "peBasicExclExtraTTM": 35.12, ... }, "symbol": "NVDA" } }`
+- **Errors:** 400 (missing/empty symbol), 429 (Finnhub rate-limit), 502 (Finnhub 5xx), 500 (other)
+- **Error 429:** `{ "error": "rate_limited", "statusCode": 429 }`
+- **Error 502:** `{ "error": "upstream_error", "statusCode": 502 }`
+- **Cache key:** `finnhub:metric:<symbol>` — TTL 86400s (24h)
+
+#### `GET /api/stock/earnings`
+- **Auth:** required
+- **Query params:** `symbol` (string, required, minLength 1)
+- **200 response:** `{ "data": <FinnhubEarningsResponse[]> }` — raw Finnhub `/stock/earnings` passthrough
+- **Sample 200:** `{ "data": [{ "actual": 0.68, "estimate": 0.64, "period": "2026-07-27", "symbol": "NVDA", "surprise": 0.04, "surprisePercent": 6.25 }] }`
+- **Errors:** 400, 429, 502, 500 (same contract as `/stock/metric`)
+- **Cache key:** `finnhub:earnings:<symbol>` — TTL 86400s
+
+#### `GET /api/stock/financials`
+- **Auth:** required
+- **Query params:** `symbol` (string, required, minLength 1)
+- **200 response:** `{ "data": <FinnhubFinancialsReportedResponse> }` — raw `/stock/financials-reported` passthrough; Finnhub returns `{ "data": [...], "symbol": "NVDA" }` nested structure — not flattened.
+- **Errors:** 400, 429, 502, 500
+- **Cache key:** `finnhub:financials:<symbol>` — TTL 86400s
+
+#### `GET /api/stock/filings`
+- **Auth:** required
+- **Query params:** `symbol` (string, required, minLength 1), `limit` (integer, optional, 1–50, default 10)
+- **200 response:** `{ "data": <FinnhubFilingsItem[]> }` — raw `/stock/filings` passthrough
+- **Sample 200:** `{ "data": [{ "form": "10-K", "filedDate": "2026-01-15", "reportUrl": "https://...", "symbol": "NVDA" }] }`
+- **Errors:** 400, 429, 502, 500
+- **Cache key:** `finnhub:filings:<symbol>:<limit>` — TTL 21600s (6h)
+
+#### `GET /api/stock/recommendation`
+- **Auth:** required
+- **Query params:** `symbol` (string, required, minLength 1)
+- **200 response:** `{ "data": <FinnhubRecommendationItem[]> }` — raw `/stock/recommendation` passthrough; monthly distribution of analyst ratings
+- **Sample 200:** `{ "data": [{ "strongBuy": 10, "buy": 15, "hold": 5, "sell": 2, "strongSell": 1, "period": "2026-10-01", "symbol": "NVDA" }] }`
+- **Errors:** 400, 429, 502, 500
+- **Cache key:** `finnhub:recommendation:<symbol>` — TTL 86400s
+
+**Observability log events** (pino, req-scoped, match `candles.*` naming from PR #7):
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| `fundamentals.cache_hit` | info | `section`, `symbol` |
+| `fundamentals.cache_miss` | info | `section`, `symbol` |
+| `fundamentals.upstream_call` | info | `section`, `symbol` |
+| `fundamentals.rate_limited` | warn | `section`, `symbol` |
+
+---
+
 ### Workspaces
 
 #### `GET /api/workspaces`
