@@ -8,8 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useTickerStore } from "@/lib/stores/tickerStore";
 import {
-  bucketedFrom,
-  bucketedTo,
+  bucketedWindowForTimeRange,
   fetchCandlesWithMeta,
   timeRangeToResolution,
 } from "@/lib/queries/market";
@@ -287,15 +286,10 @@ export function ComparisonChartPanel({
     chartTickers.length >= 2 ? "line" : chartType;
   const candlesForced = chartTickers.length >= 2 && chartType === "candles";
 
-  // resolution must be computed first — from/to bucket helpers depend on it.
   const resolution = useMemo(() => timeRangeToResolution(timeRange), [timeRange]);
 
-  // Bucketed boundaries are stable within a day/5-min window, preventing the
-  // per-second queryKey churn that caused CANDLES-FE-RETRY-STORM.
-  const fromBucket = useMemo(() => bucketedFrom(resolution), [resolution]);
-  const toBucket   = useMemo(() => bucketedTo(resolution),   [resolution]);
-
   // For custom ranges keep the user-selected pair; those are inherently stable.
+  // For all other ranges use time-range-aware bucketed window (fixes 5Y baseline).
   const { from, to } = useMemo(() => {
     if (timeRange === "custom" && customFromDate && customToDate) {
       return {
@@ -303,8 +297,8 @@ export function ComparisonChartPanel({
         to: Math.floor(new Date(customToDate).getTime() / 1000),
       };
     }
-    return { from: fromBucket, to: toBucket };
-  }, [timeRange, customFromDate, customToDate, fromBucket, toBucket]);
+    return bucketedWindowForTimeRange(timeRange);
+  }, [timeRange, customFromDate, customToDate]);
 
   // useQueries is a single hook call — safe to use with a dynamic array.
   // Each ticker has its own stable query key so removing one DOES NOT

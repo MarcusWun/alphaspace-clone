@@ -42,9 +42,20 @@ export interface UseCandlesResult {
   refetch: () => void;
 }
 
-export function useCandles(symbol: string, resolution: string): UseCandlesResult {
-  const fromBucket = useMemo(() => bucketedFrom(resolution), [resolution]);
-  const toBucket   = useMemo(() => bucketedTo(resolution),   [resolution]);
+export function useCandles(
+  symbol: string,
+  resolution: string,
+  fromOverride?: number,
+  toOverride?: number
+): UseCandlesResult {
+  const fromBucket = useMemo(
+    () => fromOverride ?? bucketedFrom(resolution),
+    [resolution, fromOverride]
+  );
+  const toBucket = useMemo(
+    () => toOverride ?? bucketedTo(resolution),
+    [resolution, toOverride]
+  );
 
   const query = useQuery({
     queryKey: ["candles", symbol, resolution, fromBucket, toBucket],

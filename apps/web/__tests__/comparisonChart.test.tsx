@@ -158,6 +158,34 @@ describe("ComparisonChartPanel", () => {
     });
   });
 
+  it("selecting 5Y produces a fetch with resolution='D' and from ≈ 5y ago (FE-5Y-4)", async () => {
+    render(
+      <ComparisonChartPanel
+        panelId="chart-5y"
+        tickers={["AAPL"]}
+        timeRange="1Y"
+      />,
+      { wrapper }
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    fetchMock.mockClear();
+
+    const fiveYBtn = screen.getByText("5Y");
+    act(() => fireEvent.click(fiveYBtn));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    const [symbol, resolution, from, to] = fetchMock.mock.calls[0]!;
+    expect(symbol).toBe("AAPL");
+    expect(resolution).toBe("D");
+
+    const fiveYearSeconds = 5 * 365 * 86_400;
+    const diff = (to as number) - (from as number);
+    expect(diff).toBeGreaterThanOrEqual(fiveYearSeconds);
+    expect(diff).toBeLessThanOrEqual(fiveYearSeconds + 2 * 86_400);
+  });
+
   it("selecting Custom and entering dates triggers fetch with custom timestamps", async () => {
     render(
       <ComparisonChartPanel
