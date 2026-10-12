@@ -319,17 +319,45 @@ Shared fetch helpers live in `apps/web/lib/queries/fundamentals.ts`. QueryKey bu
 
 **Purpose:** Fetches OHLCV candle data from `/api/candles` for a single ticker with bucketed queryKey (no per-second churn), no-refetch policy, capped retry, and `X-Candles-Status` header surfacing.
 
-**Signature:**
+**Signature (updated in hotfix/5y-baseline):**
 ```ts
-function useCandles(symbol: string, resolution: string): UseCandlesResult
+function useCandles(
+  symbol: string,
+  resolution: string,
+  fromOverride?: number,
+  toOverride?: number
+): UseCandlesResult
 // UseCandlesResult includes: data, isLoading, isFetching, isError, error, rateLimited, refetch
 ```
+
+- When `fromOverride`/`toOverride` are supplied (e.g. from `bucketedWindowForTimeRange`), they are used directly in the queryKey and fetcher. Must be day-bucketed values to preserve cache stability.
+- When omitted, the hook falls back to `bucketedFrom(resolution)` / `bucketedTo(resolution)` as before.
+- `StockChartPanel` now passes explicit `from`/`to` from `bucketedWindowForTimeRange(timeRange)` — resolves NB-2 (StockChartPanel 1D window was ~30d; now correctly ~2d).
 
 **queryKey shape:** `["candles", symbol, resolution, bucketedFrom, bucketedTo]`
 - `bucketedTo` for D/W/M: UTC-midnight of the current day (`Math.floor(Date.now() / 86_400_000) * 86_400`). Advances by one day at a time.
 - `bucketedTo` for intraday: 5-minute window (`Math.floor(Date.now() / 1000 / 300) * 300`).
-- `bucketedFrom`: wide fixed window (370 days for D, 5 years for W, 10 years for M, 30 days for intraday).
-- Bucket boundaries are memoised on `[resolution]` inside the hook — no external `from`/`to` args.
+- `bucketedFrom`: when no override, wide fixed window (370 days for D, 30 days for intraday). When override, the caller-supplied value (must be day-bucketed).
+- Bucket boundaries are memoised on `[resolution, fromOverride, toOverride]` inside the hook.
+
+**Resolution mapping (`timeRangeToResolution`)** (updated hotfix/5y-baseline):
+
+| TimeRange | Resolution | Notes |
+|---|---|---|
+| `1D` | `60` | hourly bars |
+| `1W` | `60` | hourly bars |
+| `1M` | `D` | daily bars |
+| `3M` | `D` | daily bars |
+| `6M` | `D` | daily bars |
+| `YTD` | `D` | daily bars |
+| `1Y` | `D` | daily bars |
+| `5Y` | `D` | **was `W` (weekly) — changed to `D` (daily) in hotfix/5y-baseline** |
+
+**Window helper (`bucketedWindowForTimeRange`)** — file: `apps/web/lib/queries/market.ts`:
+- Authoritative source for `{from, to}` given a `TimeRange`. Panels must call this (not `bucketedFrom(resolution)`) for all non-custom ranges.
+- All returned values are day-bucketed via `bucketedTo("D")` → stable within the same day → cache-key stable (AC-6).
+- Does not handle `"custom"` — panels manage custom `from`/`to` themselves.
+- `ComparisonChartPanel` and `StockChartPanel` both consume this helper.
 
 **Fetch function:** `fetchCandlesWithMeta(symbol, resolution, from, to)` in `apps/web/lib/queries/market.ts`
 - Uses `fetch()` directly (not `apiClient.get`) to read response headers.

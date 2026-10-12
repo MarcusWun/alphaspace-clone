@@ -142,6 +142,29 @@ describe("StockChartPanel", () => {
     void rerender;
   });
 
+  it("selecting 5Y calls useCandles with resolution='D' and 5y window (FE-5Y-5)", async () => {
+    render(<StockChartPanel panelId="sc-5y" symbol="NVDA" />, { wrapper });
+
+    // Click the 5Y button
+    const fiveYBtn = screen.getByRole("button", { name: /set time range 5Y/i });
+    act(() => fireEvent.click(fiveYBtn));
+
+    const calls = useCandlesMock.mock.calls;
+    const lastCall = calls[calls.length - 1]!;
+    expect(lastCall[0]).toBe("NVDA");
+    expect(lastCall[1]).toBe("D"); // 5Y → daily resolution
+
+    const from = lastCall[2] as number;
+    const to = lastCall[3] as number;
+    expect(typeof from).toBe("number");
+    expect(typeof to).toBe("number");
+
+    const fiveYearSeconds = 5 * 365 * 86_400;
+    const diff = to - from;
+    expect(diff).toBeGreaterThanOrEqual(fiveYearSeconds);
+    expect(diff).toBeLessThanOrEqual(fiveYearSeconds + 2 * 86_400);
+  });
+
   it("updates displayed ticker when activeTicker store changes", async () => {
     useTickerStore.setState({ activeTicker: "TSLA", activeTimeRange: "1Y" });
 

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useMemo, useState, memo } from "react";
 import { useCandles } from "@/lib/queries/useCandles";
 import { useQuote } from "@/lib/queries/useQuote";
-import { timeRangeToResolution, timeRangeToUnix, bucketedFrom, bucketedTo } from "@/lib/queries/market";
+import { timeRangeToResolution, bucketedWindowForTimeRange } from "@/lib/queries/market";
 import { useTickerStore } from "@/lib/stores/tickerStore";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { TimeRange, CandleData } from "@alpha/types";
@@ -169,28 +169,21 @@ export function StockChartPanel({
 
   const resolution = useMemo(() => timeRangeToResolution(timeRange), [timeRange]);
 
-  const fromBucket = useMemo(() => {
-    if (timeRange === "1D") {
-      const { from } = timeRangeToUnix("1D");
-      return from;
-    }
-    return bucketedFrom(resolution);
-  }, [resolution, timeRange]);
-
-  const toBucket = useMemo(() => bucketedTo(resolution), [resolution]);
+  const { from, to } = useMemo(
+    () => bucketedWindowForTimeRange(timeRange),
+    [timeRange]
+  );
 
   const { data: candles, isLoading: candlesLoading, rateLimited } = useCandles(
     effectiveSymbol,
-    resolution
+    resolution,
+    from,
+    to
   );
 
   const { data: quote, isLoading: quoteLoading } = useQuote(effectiveSymbol);
 
   const priceColor = quote && quote.d >= 0 ? "text-green-400" : "text-red-400";
-
-  // suppress unused var warning — from/to computed for potential future bucketing override
-  void fromBucket;
-  void toBucket;
 
   return (
     <div className="flex flex-col gap-2 h-full" data-panel-id={panelId}>

@@ -180,8 +180,35 @@ export function timeRangeToResolution(range: TimeRange): string {
     case "1Y":
       return "D";
     case "5Y":
-      return "W";
+      return "D";
     default:
       return "D";
+  }
+}
+
+/**
+ * Return day-bucketed {from, to} for a given TimeRange.
+ * Padding ensures the first bar returned is at or before the exact anchor.
+ * All boundaries are stable within the same day (day-bucket via bucketedTo("D")).
+ */
+export function bucketedWindowForTimeRange(
+  timeRange: TimeRange
+): { from: number; to: number } {
+  const to = bucketedTo("D");
+  switch (timeRange) {
+    case "1D":  return { from: to - 2 * 86_400,   to };
+    case "1W":  return { from: to - 10 * 86_400,  to };
+    case "1M":  return { from: to - 35 * 86_400,  to };
+    case "3M":  return { from: to - 100 * 86_400, to };
+    case "6M":  return { from: to - 190 * 86_400, to };
+    case "YTD": {
+      const jan1 = Math.floor(
+        new Date(new Date().getFullYear(), 0, 1).getTime() / 1000 / 86_400
+      ) * 86_400;
+      return { from: jan1, to };
+    }
+    case "1Y":  return { from: to - 370 * 86_400, to };
+    case "5Y":  return { from: to - 5 * 365 * 86_400, to };
+    default:    return { from: to - 370 * 86_400, to };
   }
 }
