@@ -33,7 +33,7 @@ The candles service selects its upstream provider via `CANDLES_PROVIDER` env var
 
 | Value | Provider | Notes |
 |---|---|---|
-| `yahoo` (default) | `yahoo-finance2` npm package | No API key required; uses historical()/chart() |
+| `yahoo` (default) | `yahoo-finance2` v3 npm package | No API key required; uses `chart()` for all resolutions |
 | `alphaVantage` | Alpha Vantage API | Requires `ALPHA_VANTAGE_API_KEY`; hard-fail at startup if key missing |
 
 **Provider interface** (`services/candles/types.ts`):
@@ -43,23 +43,38 @@ interface CandlesProvider {
   getCandles(params: CandlesParams): Promise<CandlesResponse>;
 }
 interface CandlesParams { symbol: string; resolution: string; from: number; to: number; }
-interface CandlesResponse { s: "ok" | "no_data"; t?: number[]; o?: number[]; h?: number[]; l?: number[]; c?: number[]; v?: number[]; }
+interface CandlesResponse {
+  s: "ok" | "no_data";
+  t?: number[]; o?: number[]; h?: number[]; l?: number[]; c?: number[]; v?: number[];
+  // Service-internal meta — NEVER included in HTTP response body; signal is via header
+  rateLimited?: boolean; // provider is in rate-limit cool-off
+  stale?: boolean;       // data served from expired/stale cache
+}
 ```
 
 **Startup log:** `[candles] provider=yahoo` or `[candles] provider=alphaVantage` — confirms active provider after restart.
 
-**Redis cache key scheme:** `<provider>:candles:<symbol>:<resolution>:<from>:<to>` (includes from/to to prevent window collisions).
+**Redis cache key scheme (v2, 2026-10-11):**
+- `yahoo:candles:<symbol>:<resolution>:<bucket>` — bucket = `floor(now/86_400_000)` for D/W/M; `floor(now/300_000)` for intraday. No `from`/`to` in key.
+- `yahoo:candles:<symbol>:<resolution>:<bucket>:stale` — same bucket, 72h TTL; written on every successful upstream fetch. Serves as fallback during rate-limit cool-off.
+- `yahoo:ratelimited` — rate-limit sentinel, 15 min TTL. Set when Yahoo returns any 429 signal.
+- `alphavantage:candles:<symbol>:<resolution>:<bucket>` — same bucket format.
+- `alphavantage:ratelimited` — AV rate-limit sentinel, 60s TTL.
+
+**Route-level slicing:** providers return a full envelope (Yahoo: 10-year window for D/W/M; AV: compact 100-bar response). The `sliceCandles()` function in `services/candles/index.ts` narrows to the requested `[from, to]` window. This decouples cache granularity from request granularity.
 
 #### `GET /api/candles`
 - **Auth:** required
 - **Query params:** `symbol` (string), `resolution` (enum: `1|5|15|30|60|D|W|M`), `from` (unix timestamp string), `to` (unix timestamp string)
 - **Response 200 (success):** `{ "data": { s:"ok", t:number[], o:number[], h:number[], l:number[], c:number[], v:number[] } }` — Finnhub-shaped envelope (unchanged for the frontend)
-- **Response 200 (unknown symbol):** `{ "data": { s:"no_data", t:[], o:[], h:[], l:[], c:[], v:[] } }` — matches Finnhub's `s:"no_data"` sentinel
-- **Response 429 (rate limited):** `{ "data": { s:"error", reason:"rate_limited" } }` — Alpha Vantage daily quota exhausted (only when provider=alphaVantage); 60s cool-off window
+- **Response 200 (unknown symbol):** `{ "data": { s:"no_data" } }` — matches Finnhub's `s:"no_data"` sentinel
+- **Response 200 (rate limited):** `{ "data": { s:"no_data" } }` with **`X-Candles-Status: rate_limited`** response header — Yahoo is in 15-min cool-off; stale data served if cached, else no_data. Do NOT retry immediately. Frontend should show a banner and suppress refetch during cool-off.
+- **Response 429 (AV quota):** `{ "data": { s:"error", reason:"rate_limited" } }` — Alpha Vantage daily quota exhausted (only when `provider=alphaVantage`); 60s cool-off window.
 - **Response 502:** upstream provider returned unexpected shape or threw non-recoverable error
 - **Errors:** 400 (invalid params), 401, 429, 502
-- **Default upstream:** Yahoo Finance 2. Set `CANDLES_PROVIDER=alphaVantage` + restart to fall back.
-- **Cache:** Redis, 24h TTL for D/W/M, 5min for intraday. Keyed by `(provider, symbol, resolution, from, to)`.
+- **Default upstream:** Yahoo Finance 2 (v3, `chart()`-only). Set `CANDLES_PROVIDER=alphaVantage` + restart to fall back.
+- **Cache:** Redis, 24h TTL for D/W/M, 5min for intraday. Bucketed by `(provider, symbol, resolution, time-bucket)`.
+- **`rateLimited`/`stale` meta fields:** internal service flags — **always stripped** from HTTP response body. Signal is via `X-Candles-Status` header only.
 
 #### `GET /api/quote`
 - **Auth:** required
@@ -190,25 +205,39 @@ interface LayoutItem {
 
 **File:** `apps/web/lib/queries/useCandles.ts`
 
-**Purpose:** Fetches OHLCV candle data from `/api/candles` for a single ticker with stable queryKey, capped exponential backoff, and visible error state on exhaustion.
+**Purpose:** Fetches OHLCV candle data from `/api/candles` for a single ticker with bucketed queryKey (no per-second churn), no-refetch policy, capped retry, and `X-Candles-Status` header surfacing.
 
 **Signature:**
 ```ts
-function useCandles(symbol: string, resolution: string, from: number, to: number): UseCandlesResult
+function useCandles(symbol: string, resolution: string): UseCandlesResult
+// UseCandlesResult includes: data, isLoading, isFetching, isError, error, rateLimited, refetch
 ```
 
-**queryKey shape:** `["candles", symbol, resolution, from, to]` — array of primitives; TanStack Query deduplicates in-flight requests with identical keys automatically.
+**queryKey shape:** `["candles", symbol, resolution, bucketedFrom, bucketedTo]`
+- `bucketedTo` for D/W/M: UTC-midnight of the current day (`Math.floor(Date.now() / 86_400_000) * 86_400`). Advances by one day at a time.
+- `bucketedTo` for intraday: 5-minute window (`Math.floor(Date.now() / 1000 / 300) * 300`).
+- `bucketedFrom`: wide fixed window (370 days for D, 5 years for W, 10 years for M, 30 days for intraday).
+- Bucket boundaries are memoised on `[resolution]` inside the hook — no external `from`/`to` args.
+
+**Fetch function:** `fetchCandlesWithMeta(symbol, resolution, from, to)` in `apps/web/lib/queries/market.ts`
+- Uses `fetch()` directly (not `apiClient.get`) to read response headers.
+- Returns `{ data: CandleData, rateLimited: boolean }`.
+- `rateLimited = res.headers.get("X-Candles-Status") === "rate_limited"`.
 
 **Retry semantics:**
-- Up to 3 retries on 5xx / network errors
-- Never retries on 4xx (unknown symbol, auth failure, etc.) — `error instanceof ApiError && statusCode 400–499` → no retry
-- Retry delays: `Math.min(1000 * 2^attempt, 10000) + Math.random() * 500` (capped at 10s + jitter)
+- Never retries rate-limited responses (`error.rateLimited === true` → retry returns false)
+- 1 retry on any other error (`failureCount < 1`)
+- Retry delay: `Math.min(1000 * 2^attempt, 8000) + Math.random() * 500` (capped at 8s + jitter)
+- `refetchOnWindowFocus: false`, `refetchOnReconnect: false`, `refetchOnMount: false`
+- staleTime: 24h for D resolution, 5 min otherwise; gcTime: 24h
 
-**Error state:** After 3 retries exhausted, `isError: true`. Callers render "Chart data unavailable" with a Retry button that calls `refetch()`.
+**rateLimited state:** When `X-Candles-Status: rate_limited` is set on a 200 response, `useCandles` returns `rateLimited: true`. `ComparisonChartPanel` shows a non-interactive banner: "Chart data temporarily unavailable (rate-limited). Try again in a few minutes."
 
-**Shared config object** (`candleQueryConfig`): spread into `useQueries` calls in `ComparisonChartPanel` for consistent behavior across single and multi-ticker charts.
+**Error state:** After retry exhaustion, `isError: true`. Callers render "Chart data unavailable" with a Retry button.
 
-**Stability invariant:** The `from`/`to` params passed to `useCandles` (and to `useQueries` via `ComparisonChartPanel`) MUST be memoised (via `useMemo`) on the enclosing component. If `from`/`to` are computed from `Date.now()` on every render, the queryKey changes every second, breaking dedup and retry exhaustion. See `CANDLES-FE-RETRY-STORM` in BUG_LEDGER.md.
+**Shared config object** (`candleQueryConfig`): exported from `useCandles.ts`; spread into `useQueries` calls in `ComparisonChartPanel` for consistent retry/refetch behavior. Does not include `staleTime` (set per-query at call site based on `resolution`).
+
+**Single-flight invariant:** All hooks with the same `(symbol, resolution)` in the same QueryClient share one in-flight request. Bucketed keys are stable within the bucket window — no per-second key drift.
 
 ---
 

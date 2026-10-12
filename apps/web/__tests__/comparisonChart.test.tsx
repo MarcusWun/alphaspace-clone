@@ -47,13 +47,16 @@ describe("normalizeCandles", () => {
 // Use vi.hoisted so mock fn is available inside vi.mock factory (which gets hoisted)
 const { fetchMock } = vi.hoisted(() => ({
   fetchMock: vi.fn().mockResolvedValue({
-    s: "ok",
-    c: [150, 155, 160],
-    t: [1700000000, 1700086400, 1700172800],
-    h: [152, 157, 162],
-    l: [148, 153, 158],
-    o: [150, 154, 159],
-    v: [1000000, 1100000, 1200000],
+    data: {
+      s: "ok",
+      c: [150, 155, 160],
+      t: [1700000000, 1700086400, 1700172800],
+      h: [152, 157, 162],
+      l: [148, 153, 158],
+      o: [150, 154, 159],
+      v: [1000000, 1100000, 1200000],
+    },
+    rateLimited: false,
   }),
 }));
 
@@ -62,6 +65,7 @@ vi.mock("@/lib/queries/market", async (importOriginal) => {
   return {
     ...actual,
     fetchCandles: fetchMock,
+    fetchCandlesWithMeta: fetchMock,
     candleKeys: {
       ticker: (symbol: string, res: string, from: number, to: number) =>
         ["candles", symbol, res, from, to],

@@ -1,8 +1,13 @@
-import { apiClient } from "@/lib/api-client";
+import { apiClient, ApiError } from "@/lib/api-client";
 import type { CandleData, NewsItem, TimeRange } from "@alpha/types";
 
 export interface CandleResponse {
   data: CandleData;
+}
+
+export interface CandleWithMeta {
+  data: CandleData;
+  rateLimited: boolean;
 }
 
 export interface NewsResponse {
@@ -14,6 +19,86 @@ export const candleKeys = {
   ticker: (symbol: string, resolution: string, from: number, to: number) =>
     ["candles", symbol, resolution, from, to] as const,
 };
+
+/**
+ * Return the upper bucket boundary (seconds).
+ * D/W/M: UTC-midnight of the current day. Intraday: 5-minute window boundary.
+ * Advancing by one day or one 5-min window keeps queryKeys stable within a session.
+ */
+export function bucketedTo(resolution: string): number {
+  const now = Date.now();
+  if (
+    resolution === "1" ||
+    resolution === "5" ||
+    resolution === "15" ||
+    resolution === "30" ||
+    resolution === "60"
+  ) {
+    return Math.floor(now / 1000 / 300) * 300;
+  }
+  return Math.floor(now / 86_400_000) * 86_400;
+}
+
+/**
+ * Return the lower bucket boundary (seconds).
+ * Wide fixed window so server's full-envelope cache is always covered.
+ */
+export function bucketedFrom(resolution: string): number {
+  const to = bucketedTo(resolution);
+  if (
+    resolution === "1" ||
+    resolution === "5" ||
+    resolution === "15" ||
+    resolution === "30" ||
+    resolution === "60"
+  ) {
+    return to - 30 * 86_400;
+  }
+  if (resolution === "W") return to - 5 * 365 * 86_400;
+  if (resolution === "M") return to - 10 * 365 * 86_400;
+  return to - 370 * 86_400;
+}
+
+/**
+ * Fetch candles and expose the X-Candles-Status response header.
+ * Uses fetch() directly (not apiClient) to read response headers.
+ */
+export async function fetchCandlesWithMeta(
+  symbol: string,
+  resolution: string,
+  from: number,
+  to: number
+): Promise<CandleWithMeta> {
+  const params = new URLSearchParams({
+    symbol,
+    resolution,
+    from: String(from),
+    to: String(to),
+  });
+
+  const res = await fetch(`/api/candles?${params}`, { credentials: "include" });
+  const rateLimited = res.headers.get("X-Candles-Status") === "rate_limited";
+
+  if (!res.ok) {
+    let message = `Request failed: ${res.status}`;
+    let code: string | undefined;
+    try {
+      const body = (await res.json()) as { error?: string; code?: string };
+      if (body.error) message = body.error;
+      code = body.code;
+    } catch {
+      // ignore JSON parse failure on error responses
+    }
+    const err = new ApiError(message, res.status, code);
+    // Mark 429s and rate-limited responses so retry predicate can skip retry
+    if (res.status === 429 || rateLimited)
+      (err as ApiError & { rateLimited: boolean }).rateLimited = true;
+    throw err;
+  }
+
+  const body = (await res.json()) as CandleResponse;
+  return { data: body.data, rateLimited };
+}
 
 export const newsKeys = {
   ticker: (symbol: string, from: string, to: string) =>

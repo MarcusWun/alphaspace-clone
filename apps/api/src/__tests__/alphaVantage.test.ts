@@ -237,7 +237,7 @@ describe("Alpha Vantage candle provider", () => {
     const FROM = 1700000000;
     const TO = 1800000000;
 
-    it("fetches and caches on miss with 24h TTL; cache key includes from+to", async () => {
+    it("fetches and caches on miss with 24h TTL under bucketed key", async () => {
       mockRedis.get.mockResolvedValue(null);
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
@@ -249,16 +249,17 @@ describe("Alpha Vantage candle provider", () => {
       });
 
       expect(result.s).toBe("ok");
-      // Cache key MUST include from+to (CANDLES-AV-OUTPUTSIZE-FULL fix aligns key scheme)
+      // Cache key uses day-bucket format (no from/to in key)
+      const bucket = Math.floor(Date.now() / 86_400_000);
       expect(mockRedis.set).toHaveBeenCalledWith(
-        `alphavantage:candles:AAPL:D:${FROM}:${TO}`,
+        `alphavantage:candles:AAPL:D:${bucket}`,
         expect.any(String),
         "EX",
         86_400
       );
     });
 
-    it("uses 5-minute TTL for intraday resolutions; cache key includes from+to", async () => {
+    it("uses 5-minute TTL for intraday resolutions under 5-min bucketed key", async () => {
       mockRedis.get.mockResolvedValue(null);
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
@@ -276,8 +277,10 @@ describe("Alpha Vantage candle provider", () => {
         symbol: "AAPL", resolution: "5", from: FROM, to: TO,
       });
 
+      // Cache key uses 5-min bucket format (no from/to in key)
+      const bucket = Math.floor(Date.now() / 300_000);
       expect(mockRedis.set).toHaveBeenCalledWith(
-        `alphavantage:candles:AAPL:5:${FROM}:${TO}`,
+        `alphavantage:candles:AAPL:5:${bucket}`,
         expect.any(String),
         "EX",
         300
@@ -288,9 +291,10 @@ describe("Alpha Vantage candle provider", () => {
       const cached = {
         s: "ok", t: [1_700_000_000], o: [1], h: [1], l: [1], c: [1], v: [1],
       };
+      const bucket = Math.floor(Date.now() / 86_400_000);
       mockRedis.get.mockImplementation(async (key: string) => {
         if (key === "alphavantage:ratelimited") return null;
-        if (key === `alphavantage:candles:MSFT:D:${FROM}:${TO}`) return JSON.stringify(cached);
+        if (key === `alphavantage:candles:MSFT:D:${bucket}`) return JSON.stringify(cached);
         return null;
       });
 
@@ -377,9 +381,9 @@ describe("Alpha Vantage candle provider", () => {
       expect(calledUrl).not.toContain("outputsize");
     });
 
-    it("compact response transform: returns ok with sliced data within the requested window", async () => {
+    it("compact response transform: returns ok with full compact data (route slicer narrows)", async () => {
       const ts = Math.floor(Date.parse("2026-10-03") / 1000);
-      const payloadWithinWindow = {
+      const payload = {
         "Time Series (Daily)": {
           "2026-10-03": {
             "1. open": "150", "2. high": "152", "3. low": "149",
@@ -390,13 +394,14 @@ describe("Alpha Vantage candle provider", () => {
       mockRedis.get.mockResolvedValue(null);
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
-        json: async () => payloadWithinWindow,
+        json: async () => payload,
       } as Response);
 
       const result = await alphaVantageProvider.getCandles({
         symbol: "AAPL", resolution: "D", from: ts - 86400, to: ts + 86400,
       });
 
+      // Provider returns full compact response; route-level slicer handles windowing
       expect(result.s).toBe("ok");
       expect(result.c).toEqual([151]);
     });
