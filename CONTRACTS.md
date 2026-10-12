@@ -261,6 +261,58 @@ interface LayoutItem {
 
 ---
 
+## Phase 2a Panels — Frontend Contracts
+
+### Panel Keys
+
+| Type | Registry key | Phase |
+|---|---|---|
+| `stock_chart` | `stock_chart` | Phase 2a |
+| `fundamentals` | `fundamentals` | Phase 2a |
+
+### Panel Props / Persistence Shape
+
+Both new panel types follow the existing `PanelConfig` shape (`{id, type, activeTicker?, title?, [key:string]:unknown}`).
+
+```typescript
+// Stock Chart panel — fields that round-trip through workspaces.layout.panels[]
+{ id: string, type: "stock_chart", activeTicker?: string, title?: string }
+
+// Fundamentals panel
+{ id: string, type: "fundamentals", activeTicker?: string, title?: string }
+```
+
+`activeTicker` is the per-panel active symbol. If absent, the panel falls back to the Zustand `useTickerStore.activeTicker`, then to default "NVDA".
+
+### Hooks Used
+
+- **`useCandles(symbol, resolution)`** — same hook as ComparisonChartPanel; see "Frontend Hook — `useCandles`" section below.
+- **`useQuote(symbol)`** — file: `apps/web/lib/queries/useQuote.ts`. 15s polling via `refetchInterval: 15_000`. QueryKey: `["quote", symbol]`. Returns `QuoteData | undefined`.
+
+### Fundamentals Section → Endpoint Mapping
+
+| Section | Component | Endpoint | QueryKey prefix | staleTime |
+|---|---|---|---|---|
+| Valuation & Metrics | `FundamentalsMetrics` | `GET /api/stock/metric` | `fundamentals.metric` | 24h |
+| Earnings | `FundamentalsEarnings` | `GET /api/stock/earnings` | `fundamentals.earnings` | 24h |
+| Financials | `FundamentalsFinancials` | `GET /api/stock/financials` | `fundamentals.financials` | 24h |
+| SEC Filings | `FundamentalsFilings` | `GET /api/stock/filings` | `fundamentals.filings` | 6h |
+| Analyst Recs | `FundamentalsRecommendations` | `GET /api/stock/recommendation` | `fundamentals.recommendation` | 24h |
+
+Shared fetch helpers live in `apps/web/lib/queries/fundamentals.ts`. QueryKey builder exported as `fundamentalsKeys`.
+
+### Zustand Integration Points
+
+- `StockChartPanel` and `FundamentalsPanel` both subscribe to `useTickerStore((s) => s.activeTicker)`.
+- When `activeTicker` changes (e.g. from WatchlistPanel clicking a ticker), both panels re-render with the new symbol.
+- Neither panel writes to `activeTicker` — they are consumers only.
+
+### Chart Renderer Decision (Phase 2a)
+
+`StockChartPanel` contains its own inline `StockLightweightChart` memo'd renderer with volume (HistogramSeries) support. `ComparisonChartPanel`'s `LightweightChart` does not include volume; extraction was deferred to Phase 2b (PRD §9 risk note). TODO: consolidate in Phase 2b.
+
+---
+
 ## Frontend Hook — `useCandles`
 
 **File:** `apps/web/lib/queries/useCandles.ts`

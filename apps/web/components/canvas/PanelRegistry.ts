@@ -70,14 +70,18 @@ export const PANEL_REGISTRY: Record<PanelType, PanelRegistryEntry> = {
   },
 };
 
-/**
- * Panel types available in Phase 1.
- * Phase 2+ panels are declared in the registry but not rendered yet.
- */
+/** Panel types that Phase 1 shipped. */
 export const PHASE1_PANELS: PanelType[] = [
   "watchlist",
   "comparison_chart",
   "news_feed",
+];
+
+/** All panels rendered as of Phase 2a (Phase 1 + stock_chart + fundamentals). */
+export const RENDERED_PANELS: PanelType[] = [
+  ...PHASE1_PANELS,
+  "stock_chart",
+  "fundamentals",
 ];
 
 // Lazy component loader — panels import their own heavy deps

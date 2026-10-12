@@ -39,6 +39,16 @@ vi.mock("@/components/panels/NewsFeedPanel", () => ({
     <div data-testid={`news-${panelId}`}>News</div>
   ),
 }));
+vi.mock("@/components/panels/StockChartPanel", () => ({
+  StockChartPanel: ({ panelId }: { panelId: string }) => (
+    <div data-testid={`stock-chart-${panelId}`}>StockChart</div>
+  ),
+}));
+vi.mock("@/components/panels/FundamentalsPanel", () => ({
+  FundamentalsPanel: ({ panelId }: { panelId: string }) => (
+    <div data-testid={`fundamentals-${panelId}`}>Fundamentals</div>
+  ),
+}));
 vi.mock("react-grid-layout", () => ({
   default: ({ children, onLayoutChange: onChange, layout }: {
     children: React.ReactNode;
@@ -84,9 +94,9 @@ describe("CanvasShell", () => {
     });
   });
 
-  it("unknown panel ID in payload renders phase-placeholder, not crash", async () => {
+  it("unrendered panel type renders phase-placeholder, not crash", async () => {
     const layoutWithUnknown: WorkspaceLayout = {
-      panels: [{ id: "ghost-id", type: "stock_chart" }],
+      panels: [{ id: "ghost-id", type: "ai_assistant" }],
       grid: [{ i: "ghost-id", x: 0, y: 0, w: 4, h: 8 }],
     };
 

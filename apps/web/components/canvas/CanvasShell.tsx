@@ -6,10 +6,12 @@ import { v4 as uuidv4 } from "uuid";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PanelWrapper } from "./PanelWrapper";
-import { PANEL_REGISTRY, PHASE1_PANELS } from "./PanelRegistry";
+import { PANEL_REGISTRY, RENDERED_PANELS } from "./PanelRegistry";
 import { WatchlistPanel } from "@/components/panels/WatchlistPanel";
 import { ComparisonChartPanel } from "@/components/panels/ComparisonChartPanel";
 import { NewsFeedPanel } from "@/components/panels/NewsFeedPanel";
+import { StockChartPanel } from "@/components/panels/StockChartPanel";
+import { FundamentalsPanel } from "@/components/panels/FundamentalsPanel";
 import { cn } from "@/lib/utils";
 import type { PanelConfig, PanelType, LayoutItem, WorkspaceLayout } from "@alpha/types";
 import "react-grid-layout/css/styles.css";
@@ -51,7 +53,20 @@ function renderPanel(
       {panel.type === "news_feed" && (
         <NewsFeedPanel panelId={panel.id} />
       )}
-      {!PHASE1_PANELS.includes(panel.type) && (
+      {panel.type === "stock_chart" && (
+        <StockChartPanel
+          panelId={panel.id}
+          symbol={panel.activeTicker as string | undefined}
+          chartType={chartType}
+        />
+      )}
+      {panel.type === "fundamentals" && (
+        <FundamentalsPanel
+          panelId={panel.id}
+          symbol={panel.activeTicker as string | undefined}
+        />
+      )}
+      {!RENDERED_PANELS.includes(panel.type) && (
         <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
           {title} — available in a future phase
         </div>
@@ -179,7 +194,7 @@ export function CanvasShell({
         <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide mr-2">
           Add panel
         </span>
-        {PHASE1_PANELS.map((type) => (
+        {RENDERED_PANELS.map((type) => (
           <Button
             key={type}
             variant="outline"

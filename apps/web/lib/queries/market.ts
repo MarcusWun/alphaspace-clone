@@ -140,12 +140,16 @@ export function timeRangeToUnix(range: TimeRange): { from: number; to: number } 
   const msDay = 86_400_000;
 
   switch (range) {
+    case "1D":
+      return { from: Math.floor((now - msDay) / 1000), to: toTs };
     case "1W":
       return { from: Math.floor((now - 7 * msDay) / 1000), to: toTs };
     case "1M":
       return { from: Math.floor((now - 30 * msDay) / 1000), to: toTs };
     case "3M":
       return { from: Math.floor((now - 90 * msDay) / 1000), to: toTs };
+    case "6M":
+      return { from: Math.floor((now - 180 * msDay) / 1000), to: toTs };
     case "YTD": {
       const jan1 = new Date(new Date().getFullYear(), 0, 1).getTime();
       return { from: Math.floor(jan1 / 1000), to: toTs };
@@ -164,11 +168,14 @@ export function timeRangeToUnix(range: TimeRange): { from: number; to: number } 
  */
 export function timeRangeToResolution(range: TimeRange): string {
   switch (range) {
+    case "1D":
+      return "60";
     case "1W":
       return "60";
     case "1M":
       return "D";
     case "3M":
+    case "6M":
     case "YTD":
     case "1Y":
       return "D";
