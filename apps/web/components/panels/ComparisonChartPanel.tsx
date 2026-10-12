@@ -8,10 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useTickerStore } from "@/lib/stores/tickerStore";
 import {
-  fetchCandles,
-  timeRangeToUnix,
+  bucketedFrom,
+  bucketedTo,
+  fetchCandlesWithMeta,
   timeRangeToResolution,
-  candleKeys,
 } from "@/lib/queries/market";
 import { candleQueryConfig } from "@/lib/queries/useCandles";
 import type { CandleData, TimeRange } from "@alpha/types";
@@ -287,42 +287,45 @@ export function ComparisonChartPanel({
     chartTickers.length >= 2 ? "line" : chartType;
   const candlesForced = chartTickers.length >= 2 && chartType === "candles";
 
-  // Resolve query params — memoised so queryKey stays stable across re-renders.
-  // Without useMemo, timeRangeToUnix() calls Date.now() on every render, changing
-  // `from`/`to` each second and creating a new queryKey — breaking dedup and
-  // preventing retry exhaustion (CANDLES-FE-RETRY-STORM).
-  const { from, to } = useMemo(() => {
-    const customFromTs = customFromDate
-      ? Math.floor(new Date(customFromDate).getTime() / 1000)
-      : 0;
-    const customToTs = customToDate
-      ? Math.floor(new Date(customToDate).getTime() / 1000)
-      : 0;
-    return timeRange === "custom" && customFromTs > 0 && customToTs > 0
-      ? { from: customFromTs, to: customToTs }
-      : timeRangeToUnix(timeRange);
-  }, [timeRange, customFromDate, customToDate]);
+  // resolution must be computed first — from/to bucket helpers depend on it.
   const resolution = useMemo(() => timeRangeToResolution(timeRange), [timeRange]);
+
+  // Bucketed boundaries are stable within a day/5-min window, preventing the
+  // per-second queryKey churn that caused CANDLES-FE-RETRY-STORM.
+  const fromBucket = useMemo(() => bucketedFrom(resolution), [resolution]);
+  const toBucket   = useMemo(() => bucketedTo(resolution),   [resolution]);
+
+  // For custom ranges keep the user-selected pair; those are inherently stable.
+  const { from, to } = useMemo(() => {
+    if (timeRange === "custom" && customFromDate && customToDate) {
+      return {
+        from: Math.floor(new Date(customFromDate).getTime() / 1000),
+        to: Math.floor(new Date(customToDate).getTime() / 1000),
+      };
+    }
+    return { from: fromBucket, to: toBucket };
+  }, [timeRange, customFromDate, customToDate, fromBucket, toBucket]);
 
   // useQueries is a single hook call — safe to use with a dynamic array.
   // Each ticker has its own stable query key so removing one DOES NOT
   // invalidate the others (survivors are served from cache, no re-fetch).
   const results = useQueries({
     queries: chartTickers.map((ticker) => ({
-      queryKey: candleKeys.ticker(ticker, resolution, from, to),
+      queryKey: ["candles", ticker, resolution, from, to] as const,
       queryFn: () => {
         performance.mark(`candle-fetch-start-${ticker}`);
-        return fetchCandles(ticker, resolution, from, to).then((data) => {
+        return fetchCandlesWithMeta(ticker, resolution, from, to).then((result) => {
           performance.mark(`candle-fetch-end-${ticker}`);
           performance.measure(
             `candle-fetch-${ticker}`,
             `candle-fetch-start-${ticker}`,
             `candle-fetch-end-${ticker}`
           );
-          return data;
+          return result;
         });
       },
       enabled: !!ticker,
+      staleTime: resolution === "D" ? 24 * 60 * 60 * 1000 : 5 * 60 * 1000,
       ...candleQueryConfig,
     })),
   });
@@ -331,7 +334,7 @@ export function ComparisonChartPanel({
   const allTimes = Array.from(
     new Set(
       results.flatMap((r) => {
-        const d = r.data;
+        const d = r.data?.data;
         return d?.s === "ok" ? d.t : [];
       })
     )
@@ -341,10 +344,11 @@ export function ComparisonChartPanel({
   const seriesData: SeriesEntry[] = chartTickers
     .map((ticker, i) => {
       const r = results[i];
-      if (!r?.data || r.data.s !== "ok") return null;
-      const normalized = normalizeCandles(r.data);
+      const candleData = r?.data?.data;
+      if (!candleData || candleData.s !== "ok") return null;
+      const normalized = normalizeCandles(candleData);
       const filled = forwardFill(normalized, allTimes);
-      const ohlc = buildOhlcData(r.data);
+      const ohlc = buildOhlcData(candleData);
       return {
         ticker,
         lineData: filled,
@@ -353,6 +357,8 @@ export function ComparisonChartPanel({
       };
     })
     .filter((s): s is SeriesEntry => s !== null);
+
+  const anyRateLimited = results.some((r) => r.data?.rateLimited === true);
 
   const handleAddTicker = useCallback(
     (e: React.FormEvent) => {
@@ -475,6 +481,14 @@ export function ComparisonChartPanel({
         </form>
       </div>
 
+      {anyRateLimited && !anyPermanentError && (
+        <div
+          className="text-xs bg-amber-500/15 text-amber-400 border border-amber-500/30 rounded px-2 py-1 shrink-0"
+          data-testid="rate-limited-banner"
+        >
+          Chart data temporarily unavailable (rate-limited). Try again in a few minutes.
+        </div>
+      )}
       {anyPermanentError && (
         <div
           className="flex items-center gap-2 text-xs text-destructive shrink-0"

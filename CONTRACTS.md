@@ -205,25 +205,39 @@ interface LayoutItem {
 
 **File:** `apps/web/lib/queries/useCandles.ts`
 
-**Purpose:** Fetches OHLCV candle data from `/api/candles` for a single ticker with stable queryKey, capped exponential backoff, and visible error state on exhaustion.
+**Purpose:** Fetches OHLCV candle data from `/api/candles` for a single ticker with bucketed queryKey (no per-second churn), no-refetch policy, capped retry, and `X-Candles-Status` header surfacing.
 
 **Signature:**
 ```ts
-function useCandles(symbol: string, resolution: string, from: number, to: number): UseCandlesResult
+function useCandles(symbol: string, resolution: string): UseCandlesResult
+// UseCandlesResult includes: data, isLoading, isFetching, isError, error, rateLimited, refetch
 ```
 
-**queryKey shape:** `["candles", symbol, resolution, fromBucket, toBucket]` — bucketed timestamps (UTC-midnight-aligned for D/W/M, 5-min aligned for intraday); TanStack Query deduplicates in-flight requests with identical keys automatically. Bucket boundary prevents the from/to-seconds instability that broke dedup in the original design.
+**queryKey shape:** `["candles", symbol, resolution, bucketedFrom, bucketedTo]`
+- `bucketedTo` for D/W/M: UTC-midnight of the current day (`Math.floor(Date.now() / 86_400_000) * 86_400`). Advances by one day at a time.
+- `bucketedTo` for intraday: 5-minute window (`Math.floor(Date.now() / 1000 / 300) * 300`).
+- `bucketedFrom`: wide fixed window (370 days for D, 5 years for W, 10 years for M, 30 days for intraday).
+- Bucket boundaries are memoised on `[resolution]` inside the hook — no external `from`/`to` args.
+
+**Fetch function:** `fetchCandlesWithMeta(symbol, resolution, from, to)` in `apps/web/lib/queries/market.ts`
+- Uses `fetch()` directly (not `apiClient.get`) to read response headers.
+- Returns `{ data: CandleData, rateLimited: boolean }`.
+- `rateLimited = res.headers.get("X-Candles-Status") === "rate_limited"`.
 
 **Retry semantics:**
-- Up to 3 retries on 5xx / network errors
-- Never retries on 4xx (unknown symbol, auth failure, etc.) — `error instanceof ApiError && statusCode 400–499` → no retry
-- Retry delays: `Math.min(1000 * 2^attempt, 10000) + Math.random() * 500` (capped at 10s + jitter)
+- Never retries rate-limited responses (`error.rateLimited === true` → retry returns false)
+- 1 retry on any other error (`failureCount < 1`)
+- Retry delay: `Math.min(1000 * 2^attempt, 8000) + Math.random() * 500` (capped at 8s + jitter)
+- `refetchOnWindowFocus: false`, `refetchOnReconnect: false`, `refetchOnMount: false`
+- staleTime: 24h for D resolution, 5 min otherwise; gcTime: 24h
 
-**Error state:** After 3 retries exhausted, `isError: true`. Callers render "Chart data unavailable" with a Retry button that calls `refetch()`.
+**rateLimited state:** When `X-Candles-Status: rate_limited` is set on a 200 response, `useCandles` returns `rateLimited: true`. `ComparisonChartPanel` shows a non-interactive banner: "Chart data temporarily unavailable (rate-limited). Try again in a few minutes."
 
-**Shared config object** (`candleQueryConfig`): spread into `useQueries` calls in `ComparisonChartPanel` for consistent behavior across single and multi-ticker charts.
+**Error state:** After retry exhaustion, `isError: true`. Callers render "Chart data unavailable" with a Retry button.
 
-**Stability invariant:** The `from`/`to` params passed to `useCandles` (and to `useQueries` via `ComparisonChartPanel`) MUST be memoised (via `useMemo`) on the enclosing component. If `from`/`to` are computed from `Date.now()` on every render, the queryKey changes every second, breaking dedup and retry exhaustion. See `CANDLES-FE-RETRY-STORM` in BUG_LEDGER.md.
+**Shared config object** (`candleQueryConfig`): exported from `useCandles.ts`; spread into `useQueries` calls in `ComparisonChartPanel` for consistent retry/refetch behavior. Does not include `staleTime` (set per-query at call site based on `resolution`).
+
+**Single-flight invariant:** All hooks with the same `(symbol, resolution)` in the same QueryClient share one in-flight request. Bucketed keys are stable within the bucket window — no per-second key drift.
 
 ---
 

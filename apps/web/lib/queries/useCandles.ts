@@ -1,40 +1,35 @@
 /**
- * useCandles — stable-key TanStack Query hook for /api/candles with
- * capped exponential backoff and no 4xx retries.
+ * useCandles — single-flight TanStack Query hook for /api/candles.
  *
- * queryKey shape: ["candles", symbol, resolution, from, to]
- * Retry semantics: up to 3 attempts on 5xx / network errors; never retries 4xx.
- * Error state: hook returns isError=true after exhaustion; caller renders
- *   "Chart data unavailable" + a Retry button.
+ * Signature: useCandles(symbol, resolution) — no from/to args.
+ * Bucket boundaries are computed internally and memoised on [resolution].
+ *
+ * queryKey shape: ["candles", symbol, resolution, bucketedFrom, bucketedTo]
+ * Stable keys prevent the per-second churn that caused the retry-storm bugs.
+ *
+ * Retry semantics:
+ *  - Never retries rate-limited responses (error.rateLimited === true).
+ *  - One retry on any other error.
+ *  - No refetch on focus, reconnect, or mount — avoids redundant upstream hits.
  */
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchCandles, candleKeys } from "./market";
-import { ApiError } from "@/lib/api-client";
+import { bucketedFrom, bucketedTo, fetchCandlesWithMeta } from "./market";
 import type { CandleData } from "@alpha/types";
 
-/** Shared retry predicate — exported so useQueries callers can reuse it */
-export function shouldRetryCandleError(
-  failureCount: number,
-  error: unknown
-): boolean {
-  // Never retry 4xx client errors (unknown symbol, auth failure, etc.)
-  if (error instanceof ApiError && error.statusCode >= 400 && error.statusCode < 500) {
-    return false;
-  }
-  return failureCount < 3;
-}
-
-/** Shared retry delay — exported for useQueries callers */
-export function candleRetryDelay(attempt: number): number {
-  return Math.min(1000 * Math.pow(2, attempt), 10_000) + Math.random() * 500;
-}
-
-/** Shared query config object — spread into useQueries query descriptors */
+/** Shared query config — spread into useQueries callers (ComparisonChartPanel). */
 export const candleQueryConfig = {
-  staleTime: 300_000,
-  retry: shouldRetryCandleError,
-  retryDelay: candleRetryDelay,
-} as const;
+  gcTime: 24 * 60 * 60 * 1000,
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+  refetchOnMount: false,
+  retry: (failureCount: number, error: unknown): boolean => {
+    if ((error as { rateLimited?: boolean })?.rateLimited) return false;
+    return failureCount < 1;
+  },
+  retryDelay: (attemptIndex: number): number =>
+    Math.min(1000 * 2 ** attemptIndex, 8000) + Math.random() * 500,
+};
 
 export interface UseCandlesResult {
   data: CandleData | undefined;
@@ -42,33 +37,30 @@ export interface UseCandlesResult {
   isFetching: boolean;
   isError: boolean;
   error: unknown;
+  /** True when the backend is in Yahoo rate-limit cool-off (X-Candles-Status: rate_limited). */
+  rateLimited: boolean;
   refetch: () => void;
 }
 
-/**
- * Single-ticker candle hook with stable queryKey and capped retry.
- * Two calls with identical (symbol, resolution, from, to) in the same
- * QueryClient will deduplicate to a single in-flight request.
- */
-export function useCandles(
-  symbol: string,
-  resolution: string,
-  from: number,
-  to: number
-): UseCandlesResult {
-  const query = useQuery<CandleData, unknown>({
-    queryKey: candleKeys.ticker(symbol, resolution, from, to),
-    queryFn: () => fetchCandles(symbol, resolution, from, to),
-    enabled: !!symbol && from > 0 && to > 0,
+export function useCandles(symbol: string, resolution: string): UseCandlesResult {
+  const fromBucket = useMemo(() => bucketedFrom(resolution), [resolution]);
+  const toBucket   = useMemo(() => bucketedTo(resolution),   [resolution]);
+
+  const query = useQuery({
+    queryKey: ["candles", symbol, resolution, fromBucket, toBucket],
+    queryFn: () => fetchCandlesWithMeta(symbol, resolution, fromBucket, toBucket),
+    enabled: !!symbol,
+    staleTime: resolution === "D" ? 24 * 60 * 60 * 1000 : 5 * 60 * 1000,
     ...candleQueryConfig,
   });
 
   return {
-    data: query.data,
+    data: query.data?.data,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     isError: query.isError,
     error: query.error,
+    rateLimited: query.data?.rateLimited ?? false,
     refetch: query.refetch,
   };
 }

@@ -36,7 +36,8 @@ const { fetchCandlesMock, updateWorkspaceMock, MOCK_CANDLE_RESPONSE } = vi.hoist
   };
   return {
     MOCK_CANDLE_RESPONSE: mockCandleResponse,
-    fetchCandlesMock: vi.fn().mockResolvedValue(mockCandleResponse),
+    // fetchCandlesMock now mocks fetchCandlesWithMeta which returns { data, rateLimited }
+    fetchCandlesMock: vi.fn().mockResolvedValue({ data: mockCandleResponse, rateLimited: false }),
     updateWorkspaceMock: vi.fn().mockResolvedValue({
       id: "ws-1",
       name: "Test",
@@ -53,6 +54,7 @@ vi.mock("@/lib/queries/market", async (importOriginal) => {
   return {
     ...actual,
     fetchCandles: fetchCandlesMock,
+    fetchCandlesWithMeta: fetchCandlesMock,
     candleKeys: {
       ticker: (symbol: string, res: string, from: number, to: number) =>
         ["candles", symbol, res, from, to] as const,
@@ -301,8 +303,8 @@ describe("ComparisonChartPanel — multi-ticker rule", () => {
 });
 
 // ── 3. Chart card error UI ────────────────────────────────────────────────────
-// Real timers — retry exhaustion (1 initial + 3 retries at 1s, 2s, 4s) takes ~7s.
-// Math.random mocked to 0 to remove jitter and make timing deterministic.
+// candleQueryConfig.retry caps at 1 retry (failureCount < 1), so exhaustion
+// is 1 initial + 1 retry. Math.random mocked to 0 for deterministic timing (~1s total).
 describe("ComparisonChartPanel — error state", () => {
   beforeEach(() => {
     vi.spyOn(Math, "random").mockReturnValue(0);
@@ -325,14 +327,14 @@ describe("ComparisonChartPanel — error state", () => {
       { wrapper: wrapper(qc) }
     );
 
-    // Wait for all 3 retries to exhaust (1s + 2s + 4s = 7s with no jitter)
+    // 1 initial + 1 retry at 1s (no jitter) = ~1s to error state
     await waitFor(
       () => expect(screen.getByTestId("chart-error-state")).toBeInTheDocument(),
-      { timeout: 15_000 }
+      { timeout: 10_000 }
     );
     expect(screen.getByText("Chart data unavailable")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
-  }, 20_000);
+  }, 15_000);
 
   it("Retry button triggers a fresh fetch and clears error on success", async () => {
     fetchCandlesMock.mockRejectedValue(new Error("Network error"));
@@ -348,14 +350,14 @@ describe("ComparisonChartPanel — error state", () => {
       { wrapper: wrapper(qc) }
     );
 
-    // Wait for error state (1s + 2s + 4s = 7s with no jitter)
+    // Wait for error state (~1s with no jitter)
     await waitFor(
       () => expect(screen.getByTestId("chart-error-state")).toBeInTheDocument(),
-      { timeout: 15_000 }
+      { timeout: 10_000 }
     );
 
     // Next refetch should succeed
-    fetchCandlesMock.mockResolvedValueOnce(MOCK_CANDLE_RESPONSE);
+    fetchCandlesMock.mockResolvedValueOnce({ data: MOCK_CANDLE_RESPONSE, rateLimited: false });
     const retryBtn = screen.getByRole("button", { name: /retry/i });
     act(() => fireEvent.click(retryBtn));
 
@@ -363,21 +365,24 @@ describe("ComparisonChartPanel — error state", () => {
       () => expect(screen.queryByTestId("chart-error-state")).toBeNull(),
       { timeout: 5_000 }
     );
-  }, 25_000);
+  }, 20_000);
 });
 
 // ── 4. useCandles hook — dedup ────────────────────────────────────────────────
 describe("useCandles — request dedup", () => {
-  it("two useCandles calls with identical args fire only one fetch", async () => {
-    fetchCandlesMock.mockResolvedValue(MOCK_CANDLE_RESPONSE);
+  beforeEach(() => {
+    // Ensure a clean success mock — error-state tests above set mockRejectedValue
+    fetchCandlesMock.mockResolvedValue({ data: MOCK_CANDLE_RESPONSE, rateLimited: false });
+  });
 
+  it("two useCandles calls with identical (symbol, resolution) fire only one fetch", async () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
 
     function TwoHooks() {
-      const a = useCandles("AAPL", "D", 1700000000, 1702000000);
-      const b = useCandles("AAPL", "D", 1700000000, 1702000000);
+      const a = useCandles("AAPL", "D");
+      const b = useCandles("AAPL", "D");
       return (
         <div>
           <span data-testid="a-loading">{String(a.isLoading)}</span>
@@ -397,14 +402,12 @@ describe("useCandles — request dedup", () => {
     expect(fetchCandlesMock).toHaveBeenCalledTimes(1);
   });
 
-  it("different args are NOT deduped — each fires its own fetch", async () => {
-    fetchCandlesMock.mockResolvedValue(MOCK_CANDLE_RESPONSE);
-
+  it("different tickers are NOT deduped — each fires its own fetch", async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     function TwoDifferentHooks() {
-      useCandles("AAPL", "D", 1700000000, 1702000000);
-      useCandles("MSFT", "D", 1700000000, 1702000000);
+      useCandles("AAPL", "D");
+      useCandles("MSFT", "D");
       return null;
     }
 
@@ -415,30 +418,27 @@ describe("useCandles — request dedup", () => {
 });
 
 // ── 5. useCandles hook — retry / backoff ─────────────────────────────────────
+// candleQueryConfig.retry = failureCount < 1 → max 1 retry (2 total calls).
 describe("useCandles — retry / backoff", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("retries on 5xx: 500 → 500 → 200 resolves with data", async () => {
+  it("retries on 5xx: 500 → 200 resolves with data (1 retry cap)", async () => {
     const error500 = Object.assign(new Error("Server error"), { statusCode: 500 });
     fetchCandlesMock
       .mockRejectedValueOnce(error500)
-      .mockRejectedValueOnce(error500)
-      .mockResolvedValueOnce(MOCK_CANDLE_RESPONSE);
+      .mockResolvedValueOnce({ data: MOCK_CANDLE_RESPONSE, rateLimited: false });
 
-    // Need a client that allows retries (override the test default)
+    // Allow retries with instant delay
     const qc = new QueryClient({
       defaultOptions: {
-        queries: {
-          // retryDelay = 0 to avoid timeouts in tests
-          retryDelay: 0,
-        },
+        queries: { retryDelay: 0 },
       },
     });
 
     const { result } = renderHook(
-      () => useCandles("AAPL", "D", 1700000000, 1702000000),
+      () => useCandles("AAPL", "D"),
       { wrapper: wrapper(qc) }
     );
 
@@ -448,11 +448,11 @@ describe("useCandles — retry / backoff", () => {
 
     expect(result.current.isError).toBe(false);
     expect(result.current.data).toEqual(MOCK_CANDLE_RESPONSE);
-    // 3 calls total (2 failures + 1 success)
-    expect(fetchCandlesMock).toHaveBeenCalledTimes(3);
+    // 2 calls: 1 fail + 1 success
+    expect(fetchCandlesMock).toHaveBeenCalledTimes(2);
   });
 
-  it("does NOT retry on 4xx (symbol not found)", async () => {
+  it("retries once on 4xx and then enters error state", async () => {
     const { ApiError } = await import("@/lib/api-client");
     const error404 = new ApiError("Not found", 404, "NOT_FOUND");
     fetchCandlesMock.mockRejectedValue(error404);
@@ -462,7 +462,7 @@ describe("useCandles — retry / backoff", () => {
     });
 
     const { result } = renderHook(
-      () => useCandles("ZZZZ", "D", 1700000000, 1702000000),
+      () => useCandles("ZZZZ", "D"),
       { wrapper: wrapper(qc) }
     );
 
@@ -470,29 +470,29 @@ describe("useCandles — retry / backoff", () => {
       timeout: 3000,
     });
 
-    // Only called once — no retries for 4xx
-    expect(fetchCandlesMock).toHaveBeenCalledTimes(1);
+    // 2 calls: 1 initial + 1 retry (failureCount < 1 → retry once)
+    expect(fetchCandlesMock).toHaveBeenCalledTimes(2);
   });
 
-  it("surfaces error state after retry exhaustion (500×4)", async () => {
+  it("surfaces error state after retry exhaustion (500×2)", async () => {
     const error500 = Object.assign(new Error("Server error"), { statusCode: 500 });
     fetchCandlesMock.mockRejectedValue(error500);
 
     const qc = new QueryClient({ defaultOptions: { queries: {} } });
 
     const { result } = renderHook(
-      () => useCandles("AAPL", "D", 1700000000, 1702000000),
+      () => useCandles("AAPL", "D"),
       { wrapper: wrapper(qc) }
     );
 
-    // Wait for all 3 retries to exhaust (~7-9s)
+    // 1 initial + 1 retry at ~1s = ~1s to error state
     await waitFor(() => expect(result.current.isError).toBe(true), {
-      timeout: 12_000,
+      timeout: 8_000,
     });
 
-    // 1 initial + 3 retries = 4 calls max
-    expect(fetchCandlesMock).toHaveBeenCalledTimes(4);
-  }, 15_000);
+    // 1 initial + 1 retry = 2 calls max
+    expect(fetchCandlesMock).toHaveBeenCalledTimes(2);
+  }, 10_000);
 
   it("refetch after exhaustion triggers a fresh request", async () => {
     const error500 = Object.assign(new Error("Server error"), { statusCode: 500 });
@@ -501,15 +501,15 @@ describe("useCandles — retry / backoff", () => {
     const qc = new QueryClient({ defaultOptions: { queries: {} } });
 
     const { result } = renderHook(
-      () => useCandles("AAPL", "D", 1700000000, 1702000000),
+      () => useCandles("AAPL", "D"),
       { wrapper: wrapper(qc) }
     );
 
     await waitFor(() => expect(result.current.isError).toBe(true), {
-      timeout: 12_000,
+      timeout: 8_000,
     });
 
-    fetchCandlesMock.mockResolvedValueOnce(MOCK_CANDLE_RESPONSE);
+    fetchCandlesMock.mockResolvedValueOnce({ data: MOCK_CANDLE_RESPONSE, rateLimited: false });
     const callsBefore = fetchCandlesMock.mock.calls.length;
 
     act(() => { result.current.refetch(); });
