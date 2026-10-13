@@ -49,6 +49,11 @@ vi.mock("@/components/panels/FundamentalsPanel", () => ({
     <div data-testid={`fundamentals-${panelId}`}>Fundamentals</div>
   ),
 }));
+vi.mock("@/components/panels/AiAssistantPanel", () => ({
+  AiAssistantPanel: ({ panelId }: { panelId: string }) => (
+    <div data-testid={`ai-assistant-${panelId}`}>AI Assistant</div>
+  ),
+}));
 vi.mock("react-grid-layout", () => ({
   default: ({ children, onLayoutChange: onChange, layout }: {
     children: React.ReactNode;
@@ -96,7 +101,8 @@ describe("CanvasShell", () => {
 
   it("unrendered panel type renders phase-placeholder, not crash", async () => {
     const layoutWithUnknown: WorkspaceLayout = {
-      panels: [{ id: "ghost-id", type: "ai_assistant" }],
+      // Use a type-cast unknown type to simulate a future/unrecognised panel
+      panels: [{ id: "ghost-id", type: "future_panel" as unknown as import("@alpha/types").PanelType }],
       grid: [{ i: "ghost-id", x: 0, y: 0, w: 4, h: 8 }],
     };
 
@@ -113,6 +119,28 @@ describe("CanvasShell", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/available in a future phase/i)).toBeInTheDocument();
+    });
+  });
+
+  it("ai_assistant panel type renders AI Assistant panel (Phase 3a wired)", async () => {
+    const layoutWithAi: WorkspaceLayout = {
+      panels: [{ id: "ai-panel-id", type: "ai_assistant" }],
+      grid: [{ i: "ai-panel-id", x: 0, y: 0, w: 4, h: 10 }],
+    };
+
+    expect(() => {
+      render(
+        <CanvasShell
+          workspaceId="ws-ai"
+          initialLayout={layoutWithAi}
+          onLayoutChange={vi.fn()}
+        />,
+        { wrapper }
+      );
+    }).not.toThrow();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("ai-assistant-ai-panel-id")).toBeInTheDocument();
     });
   });
 

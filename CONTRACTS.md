@@ -518,3 +518,18 @@ Default behavior (`.env.example` placeholder value) → **always false** → all
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic model (dormant unless key is real) |
 
 Docker Compose: `api` service requires `extra_hosts: ["host.docker.internal:host-gateway"]` to reach Ollama on the Linux host.
+
+---
+
+### Frontend consumption notes (Phase 3a)
+
+**File:** `apps/web/lib/queries/ai.ts`
+
+The web app consumes the AI Assistant contracts via three exports:
+- `useAiHistory(workspaceId)` — React Query hook for `GET /api/ai/history/:workspaceId`
+- `useClearAiHistory()` — React Query mutation for `DELETE /api/ai/history/:workspaceId`
+- `streamAiChat({workspaceId, message, deep})` — async generator that drives `POST /api/ai/chat/stream`
+
+**Type strategy:** `ChatEvent` and `ChatMessage` types are locally mirrored in `apps/web/lib/queries/ai.ts`. They are NOT shared via `packages/types/` — these are frontend-only SSE/API shapes that don't need to cross the package boundary.
+
+**NB-1 UX caveat (history reappear):** The DELETE endpoint uses a 30s Redis sentinel. During the undo window, `GET /api/ai/history` returns `[]`. After the sentinel expires (~30s), history rows reappear in GET responses until a new POST overwrites them. The frontend presents a 30s "undo" banner after "New chat" but does NOT work around this backend behavior — if the user reloads after 30s without sending a new message, old history may reappear. This is a known carry-forward (NB-1).

@@ -12,6 +12,7 @@ import { ComparisonChartPanel } from "@/components/panels/ComparisonChartPanel";
 import { NewsFeedPanel } from "@/components/panels/NewsFeedPanel";
 import { StockChartPanel } from "@/components/panels/StockChartPanel";
 import { FundamentalsPanel } from "@/components/panels/FundamentalsPanel";
+import { AiAssistantPanel } from "@/components/panels/AiAssistantPanel";
 import { cn } from "@/lib/utils";
 import type { PanelConfig, PanelType, LayoutItem, WorkspaceLayout } from "@alpha/types";
 import "react-grid-layout/css/styles.css";
@@ -32,7 +33,8 @@ const DEBOUNCE_MS = 300;
 function renderPanel(
   panel: PanelConfig,
   onRemove: (id: string) => void,
-  chartType: "line" | "candles"
+  chartType: "line" | "candles",
+  workspaceId: string
 ) {
   const reg = PANEL_REGISTRY[panel.type];
   const title = panel.title ?? reg?.label ?? panel.type;
@@ -65,6 +67,9 @@ function renderPanel(
           panelId={panel.id}
           symbol={panel.activeTicker as string | undefined}
         />
+      )}
+      {panel.type === "ai_assistant" && (
+        <AiAssistantPanel panelId={panel.id} workspaceId={workspaceId} />
       )}
       {!RENDERED_PANELS.includes(panel.type) && (
         <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
@@ -230,7 +235,7 @@ export function CanvasShell({
                 className={cn("overflow-hidden")}
                 data-testid={`panel-${panel.type}-${panel.id}`}
               >
-                {renderPanel(panel, removePanel, chartType)}
+                {renderPanel(panel, removePanel, chartType, workspaceId)}
               </div>
             ))}
           </GridLayout>
