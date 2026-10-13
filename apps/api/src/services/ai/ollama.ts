@@ -1,5 +1,6 @@
 import type { ChatEvent, RouterContext } from "./types.js";
 import { openAiTools, dispatchTool } from "./tools.js";
+import { sanitizeHistory } from "./historyLoader.js";
 
 const OLLAMA_BASE_URL = () => process.env["OLLAMA_BASE_URL"] ?? "http://localhost:11434";
 const OLLAMA_MODEL = () => process.env["OLLAMA_MODEL"] ?? "qwen3.6:27b";
@@ -78,8 +79,9 @@ export async function warmUpOllama(): Promise<{ model: string; ok: boolean; dura
 
 export async function* streamOllamaResponse(ctx: RouterContext): AsyncIterable<ChatEvent> {
   const model = OLLAMA_MODEL();
+  const sanitized = sanitizeHistory(ctx.history, ctx.workspaceId);
   const messages: OllamaMessage[] = [
-    ...historyToMessages(ctx.history),
+    ...historyToMessages(sanitized),
     { role: "user", content: ctx.userMessage },
   ];
 

@@ -463,7 +463,27 @@ The `error` ChatEvent `{ type: "error", source: "local"|"cloud", message: string
 - If escalate: try Anthropic; on error, fall through to Ollama.
 - Else: try Ollama; on error, if cloudActive, try Anthropic as fallback; else throw.
 
-**Persistence:** User message persisted before streaming. Assistant message + tool calls persisted after stream completes.
+**Persistence (updated hotfix 2026-10-13 — AI-HISTORY-PERSISTENCE):**
+User message is persisted before streaming begins. When the stream closes (`done` event), all assistant-turn rows are persisted atomically in a single Prisma transaction. A single prompt that triggers one tool call produces exactly four rows in insert order:
+
+| # | role | key fields |
+|---|------|-----------|
+| 1 | `user` | `content` = prompt text |
+| 2 | `assistant` | `content=""`, `toolCalls=[{id, name, args}]` — pure tool-call turn |
+| 3 | `tool` | `toolCallId="c1"`, `content=JSON.stringify(result)` |
+| 4 | `assistant` | `content="..."`, `toolCalls=null`, `source="local"\|"cloud"` — pure content turn |
+
+Multi-tool-call prompts produce one batched `assistant{toolCalls:[c1,c2,...]}` row, followed by one `tool` row per result in result order, then one final `assistant{content}` row.
+
+`tool_result` events always produce a `role:"tool"` row with `toolCallId` populated. No row ever combines `toolCalls` and non-empty `content` — these are protocol-distinct turns and must be stored separately.
+
+**History sanitizer (`sanitizeHistory`):** On each request, history loaded from DB is passed through `sanitizeHistory` before being mapped to provider messages. It drops any `assistant` row with `toolCalls` that is not followed by matching `tool` rows in order (all-or-nothing; drops the entire orphaned slice to the next `user` row). This protects against legacy malformed data. When rows are dropped, a structured log line is emitted (see observability table below).
+
+**New observability log line (hotfix 2026-10-13):**
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| `ai.history.sanitized` | info | `workspaceId`, `orphaned_assistant_rows`, `orphaned_tool_rows` |
 
 ---
 
