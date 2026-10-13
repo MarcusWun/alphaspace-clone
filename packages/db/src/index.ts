@@ -27,4 +27,5 @@ export type {
   Watchlist,
   Alert,
   AlertStatus,
+  ChatMessage,
 } from "@prisma/client";

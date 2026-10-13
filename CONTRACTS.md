@@ -416,3 +416,105 @@ Common status codes:
 - 429 — rate limit exceeded (includes `Retry-After` header)
 - 502 — upstream Finnhub error
 - 503 — health check degraded
+
+---
+
+## AI Assistant (Phase 3a)
+
+All routes require authentication. Workspace ownership is verified per-request — requests to workspaces owned by other users return 404 (not 403, to avoid leaking workspace existence).
+
+### `POST /api/ai/chat/stream`
+
+- **Auth:** required
+- **Content-Type:** `application/json` (request) / `text/event-stream` (response)
+- **Request body:**
+```json
+{ "workspaceId": "string (required)", "message": "string (required)", "deep": "boolean (optional, default false)" }
+```
+- **Response:** SSE stream. Each event: `data: <json>\n\n`. Events:
+
+| Event type | Shape |
+|---|---|
+| `token` | `{ type: "token", content: string }` |
+| `tool_call` | `{ type: "tool_call", id: string, name: string, args: unknown }` |
+| `tool_result` | `{ type: "tool_result", id: string, name: string, result: unknown }` |
+| `heartbeat` | `{ type: "heartbeat" }` — emitted every 15s during long tool calls |
+| `done` | `{ type: "done", source: "local"\|"cloud", messageId: string }` |
+
+- **Errors:** 404 if workspace not found; 400 if body invalid; 401 if unauthenticated.
+
+**Routing logic:**
+- `cloudActive = isCloudConfigured()` — true only when `ANTHROPIC_API_KEY` is plausibly-real (≥20 chars, not matching `your_*`).
+- `shouldEscalate = cloudActive && (deep || estimatedTokens > 96000)`.
+- If escalate: try Anthropic; on error, fall through to Ollama.
+- Else: try Ollama; on error, if cloudActive, try Anthropic as fallback; else throw.
+
+**Persistence:** User message persisted before streaming. Assistant message + tool calls persisted after stream completes.
+
+---
+
+### `GET /api/ai/history/:workspaceId`
+
+- **Auth:** required
+- **Response 200:**
+```json
+{ "messages": [ { "id": "string", "workspaceId": "string", "userId": "string", "role": "user|assistant|tool", "content": "string", "source": "local|cloud|null", "toolCalls": "json|null", "toolCallId": "string|null", "createdAt": "ISO8601" }, ... ] }
+```
+- Messages ordered by `createdAt ASC`.
+- **Soft-delete window:** If `DELETE /api/ai/history/:workspaceId` was called within the last 30s (Redis sentinel `ai:undo:<workspaceId>` set), returns `{ messages: [] }` instead of the real rows.
+- **Errors:** 404 if workspace not found.
+
+---
+
+### `DELETE /api/ai/history/:workspaceId`
+
+- **Auth:** required
+- **Behavior:** Soft-deletes history. Sets Redis key `ai:undo:<workspaceId>` with 30s TTL. Does NOT delete rows immediately. Rows are hidden from GET during the undo window. After TTL expires, rows remain accessible unless a new soft-delete fires.
+- **Response:** 204 No Content.
+- **Errors:** 404 if workspace not found.
+
+---
+
+### Tool Dispatcher Contract
+
+Seven tools are exposed to the AI model. Each tool has a Zod validation schema; validation failures return `{ ok: false, error: <parse message> }` to the model (not an HTTP error).
+
+| Tool | Args schema | Backing service |
+|---|---|---|
+| `get_quote` | `{ symbol: string }` | `services/finnhub.ts::getQuote(symbol)` |
+| `get_candles` | `{ symbol: string, resolution: string, from: string, to: string }` | `services/candles.ts::getCandles(params)` |
+| `get_company_news` | `{ symbol: string, from: string, to: string }` | `services/finnhub.ts::getCompanyNews(symbol, from, to)` |
+| `get_fundamentals_metric` | `{ symbol: string }` | `services/fundamentals.ts::getStockMetric(symbol)` (24h TTL) |
+| `get_fundamentals_earnings` | `{ symbol: string }` | `services/fundamentals.ts::getStockEarnings(symbol)` |
+| `get_fundamentals_filings` | `{ symbol: string, limit?: number(1-50) }` | `services/fundamentals.ts::getStockFilings(symbol, limit)` |
+| `get_fundamentals_recommendation` | `{ symbol: string }` | `services/fundamentals.ts::getStockRecommendation(symbol)` |
+
+Dispatcher export: `dispatchTool(name: string, rawArgs: unknown): Promise<{ ok: true, result: unknown } | { ok: false, error: string }>`.
+
+Both `openAiTools` (for Ollama/OpenAI-compatible endpoints) and `anthropicTools` (for Anthropic Messages API) are exported from `services/ai/tools.ts`.
+
+---
+
+### `cloudConfig.ts` contract
+
+`isCloudConfigured(): boolean` — returns `true` iff `ANTHROPIC_API_KEY` env var:
+- Is set and non-empty
+- Has length ≥ 20
+- Does not start with `your_`
+- Is not exactly `your_anthropic_api_key_here`
+
+Default behavior (`.env.example` placeholder value) → **always false** → all requests route to Ollama.
+
+---
+
+### New environment variables (Phase 3a)
+
+| Variable | Default | Description |
+|---|---|---|
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
+| `OLLAMA_MODEL` | `qwen3.6:27b` | Ollama model to use |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Keep model resident (`-1` = forever) |
+| `ANTHROPIC_API_KEY` | `your_anthropic_api_key_here` | Anthropic key (placeholder keeps cloud dormant) |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic model (dormant unless key is real) |
+
+Docker Compose: `api` service requires `extra_hosts: ["host.docker.internal:host-gateway"]` to reach Ollama on the Linux host.
