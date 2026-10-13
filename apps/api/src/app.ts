@@ -6,6 +6,7 @@ import { workspaceRoutes } from "./routes/workspaces.js";
 import { watchlistRoutes } from "./routes/watchlists.js";
 import { marketRoutes } from "./routes/market.js";
 import { fundamentalsRoutes } from "./routes/fundamentals.js";
+import { aiRoutes } from "./routes/ai.js";
 import { verifySessionPlugin } from "./plugins/auth.js";
 import { rateLimitPlugin } from "./plugins/rateLimit.js";
 
@@ -85,6 +86,7 @@ export async function buildApp(opts?: { loggerInstance?: FastifyBaseLogger }) {
   await app.register(watchlistRoutes, { prefix: "/api" });
   await app.register(marketRoutes, { prefix: "/api" });
   await app.register(fundamentalsRoutes, { prefix: "/api" });
+  await app.register(aiRoutes, { prefix: "/api" });
 
   return app;
 }

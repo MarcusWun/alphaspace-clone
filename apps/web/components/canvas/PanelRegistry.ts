@@ -77,11 +77,12 @@ export const PHASE1_PANELS: PanelType[] = [
   "news_feed",
 ];
 
-/** All panels rendered as of Phase 2a (Phase 1 + stock_chart + fundamentals). */
+/** All panels rendered as of Phase 3a (Phase 2a + ai_assistant). */
 export const RENDERED_PANELS: PanelType[] = [
   ...PHASE1_PANELS,
   "stock_chart",
   "fundamentals",
+  "ai_assistant",
 ];
 
 // Lazy component loader — panels import their own heavy deps

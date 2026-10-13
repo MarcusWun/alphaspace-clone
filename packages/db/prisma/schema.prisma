@@ -22,11 +22,12 @@ model User {
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
-  accounts   Account[]
-  sessions   Session[]
-  workspaces Workspace[]
-  watchlists Watchlist[]
-  alerts     Alert[]
+  accounts     Account[]
+  sessions     Session[]
+  workspaces   Workspace[]
+  watchlists   Watchlist[]
+  alerts       Alert[]
+  chatMessages ChatMessage[]
 
   @@map("users")
 }
@@ -80,7 +81,8 @@ model Workspace {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chatMessages ChatMessage[]
 
   @@index([userId])
   @@map("workspaces")
@@ -121,4 +123,22 @@ enum AlertStatus {
   ACTIVE
   TRIGGERED
   CANCELLED
+}
+
+model ChatMessage {
+  id          String    @id @default(cuid())
+  workspaceId String    @map("workspace_id")
+  userId      String    @map("user_id")
+  role        String    // "user" | "assistant" | "tool"
+  content     String    @db.Text
+  source      String?
+  toolCalls   Json?     @map("tool_calls")
+  toolCallId  String?   @map("tool_call_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@map("chat_messages")
 }

@@ -42,6 +42,11 @@ export const mockPrisma = {
     update: vi.fn(),
     delete: vi.fn(),
   },
+  chatMessage: {
+    findMany: vi.fn(),
+    create: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   session: {
     findUnique: vi.fn(),
   },
