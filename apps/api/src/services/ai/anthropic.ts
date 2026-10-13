@@ -1,5 +1,6 @@
 import type { ChatEvent, RouterContext } from "./types.js";
 import { anthropicTools, dispatchTool } from "./tools.js";
+import { sanitizeHistory } from "./historyLoader.js";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -47,7 +48,8 @@ function historyToAnthropicMessages(
 
 export async function* streamAnthropicResponse(ctx: RouterContext): AsyncIterable<ChatEvent> {
   const model = ANTHROPIC_MODEL();
-  const messages = historyToAnthropicMessages(ctx.history, ctx.userMessage);
+  const sanitized = sanitizeHistory(ctx.history, ctx.workspaceId);
+  const messages = historyToAnthropicMessages(sanitized, ctx.userMessage);
 
   yield* streamAnthropicLoop(model, messages);
 }

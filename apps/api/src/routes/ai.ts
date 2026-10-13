@@ -7,6 +7,11 @@ import { isCloudConfigured } from "../services/ai/cloudConfig.js";
 import { estimateTokens } from "../services/ai/router.js";
 import type { ChatEvent } from "../services/ai/types.js";
 
+type PersistEvent =
+  | { kind: "assistant_tool_calls"; toolCalls: Array<{ id: string; name: string; args: unknown }> }
+  | { kind: "tool_result"; toolCallId: string; name: string; content: string }
+  | { kind: "assistant_content"; content: string };
+
 const UNDO_TTL_SECONDS = 30;
 
 function undoKey(workspaceId: string): string {
@@ -80,6 +85,10 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
       const toolCallsMade: Array<{ id: string; name: string; args: unknown }> = [];
       let doneEvent: (ChatEvent & { type: "done" }) | null = null;
 
+      const persistEvents: PersistEvent[] = [];
+      let pendingToolCalls: Array<{ id: string; name: string; args: unknown }> = [];
+      let pendingContent = "";
+
       // Heartbeat timer to prevent CF Tunnel timeout on long tool calls
       const heartbeatInterval = setInterval(() => {
         try {
@@ -97,11 +106,27 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
 
           if (event.type === "token") {
             accumulatedContent += event.content;
+            pendingContent += event.content;
           } else if (event.type === "tool_call") {
             request.log.info({ tool: event.name, args: event.args }, "ai.tool.call");
             toolCallsMade.push({ id: event.id, name: event.name, args: event.args });
+            if (pendingContent.length > 0) {
+              persistEvents.push({ kind: "assistant_content", content: pendingContent });
+              pendingContent = "";
+            }
+            pendingToolCalls.push({ id: event.id, name: event.name, args: event.args });
           } else if (event.type === "tool_result") {
             request.log.info({ tool: event.name, duration_ms: 0, ok: true }, "ai.tool.result");
+            if (pendingToolCalls.length > 0) {
+              persistEvents.push({ kind: "assistant_tool_calls", toolCalls: pendingToolCalls });
+              pendingToolCalls = [];
+            }
+            persistEvents.push({
+              kind: "tool_result",
+              toolCallId: event.id,
+              name: event.name,
+              content: JSON.stringify(event.result),
+            });
           } else if (event.type === "done") {
             doneEvent = event;
           } else if (event.type === "error") {
@@ -122,27 +147,54 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
 
       clearInterval(heartbeatInterval);
 
+      // Flush any trailing content not yet committed to persistEvents
+      if (pendingContent.length > 0) {
+        persistEvents.push({ kind: "assistant_content", content: pendingContent });
+      }
+
       const chatDuration = Date.now() - chatStart;
 
-      // Persist assistant message
+      // Persist assistant turn atomically: one transaction covers all rows for this prompt
       let assistantMsgId: string | undefined;
-      if (doneEvent) {
-        const toolCallsJson =
-          toolCallsMade.length > 0
-            ? (toolCallsMade as unknown as Prisma.InputJsonValue)
-            : undefined;
-
-        const assistantMsg = await prisma.chatMessage.create({
-          data: {
-            workspaceId,
-            userId,
-            role: "assistant",
-            content: accumulatedContent,
-            source: doneEvent.source,
-            toolCalls: toolCallsJson,
-          },
-        });
-        assistantMsgId = assistantMsg.id;
+      if (doneEvent && persistEvents.length > 0) {
+        const finalDoneEvent = doneEvent;
+        const createdRows = await prisma.$transaction(
+          persistEvents.map((e) => {
+            if (e.kind === "assistant_tool_calls") {
+              return prisma.chatMessage.create({
+                data: {
+                  workspaceId,
+                  userId,
+                  role: "assistant",
+                  content: "",
+                  toolCalls: e.toolCalls as unknown as Prisma.InputJsonValue,
+                  source: finalDoneEvent.source,
+                },
+              });
+            }
+            if (e.kind === "tool_result") {
+              return prisma.chatMessage.create({
+                data: {
+                  workspaceId,
+                  userId,
+                  role: "tool",
+                  content: e.content,
+                  toolCallId: e.toolCallId,
+                },
+              });
+            }
+            return prisma.chatMessage.create({
+              data: {
+                workspaceId,
+                userId,
+                role: "assistant",
+                content: e.content,
+                source: finalDoneEvent.source,
+              },
+            });
+          })
+        );
+        assistantMsgId = createdRows[createdRows.length - 1]?.id;
       }
 
       request.log.info(

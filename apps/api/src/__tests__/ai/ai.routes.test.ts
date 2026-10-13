@@ -155,6 +155,168 @@ describe("AI routes", () => {
       expect(res.statusCode).toBe(404);
       await app.close();
     });
+
+    describe("route reducer persistence", () => {
+      const baseMsgShape = (id: string, role: string) => ({
+        id,
+        workspaceId: "ws-1",
+        userId: user1.id,
+        role,
+        content: "",
+        source: null,
+        toolCalls: null,
+        toolCallId: null,
+        createdAt: new Date(),
+      });
+
+      beforeEach(() => {
+        mockPrisma.workspace.findFirst.mockResolvedValue(sampleWorkspace);
+        mockPrisma.chatMessage.findMany.mockResolvedValue([]);
+      });
+
+      it("single tool call: 1 user create + transaction with [assistant(tool_calls), tool, assistant(content)]", async () => {
+        mockPrisma.chatMessage.create
+          .mockResolvedValueOnce(baseMsgShape("msg-user", "user"))
+          .mockResolvedValueOnce(baseMsgShape("msg-1", "assistant"))
+          .mockResolvedValueOnce(baseMsgShape("msg-2", "tool"))
+          .mockResolvedValueOnce(baseMsgShape("msg-3", "assistant"));
+
+        mockRouteChat.mockReturnValue(
+          makeStream([
+            { type: "tool_call", id: "c1", name: "get_quote", args: { symbol: "NVDA" } },
+            { type: "tool_result", id: "c1", name: "get_quote", result: { c: 226 } },
+            { type: "token", content: "NVDA " },
+            { type: "token", content: "is $226" },
+            { type: "done", source: "local", messageId: "local-xyz" },
+          ]) as ReturnType<typeof routeChat>
+        );
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/ai/chat/stream",
+          headers: { authorization: bearerFor(user1.id, user1.email) },
+          payload: { workspaceId: "ws-1", message: "what is NVDA" },
+        });
+
+        expect(res.statusCode).toBe(200);
+        // 1 user create (pre-stream) + 3 inside the transaction
+        expect(mockPrisma.chatMessage.create).toHaveBeenCalledTimes(4);
+        expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+
+        type CreateCall = [{ data: Record<string, unknown> }];
+        const calls = mockPrisma.chatMessage.create.mock.calls as CreateCall[];
+
+        // First call is user row (pre-stream)
+        expect(calls[0]![0].data.role).toBe("user");
+
+        // Transaction rows: assistant(tool_calls), tool, assistant(content)
+        expect(calls[1]![0].data).toMatchObject({
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "c1", name: "get_quote", args: { symbol: "NVDA" } }],
+        });
+        expect(calls[2]![0].data).toMatchObject({
+          role: "tool",
+          toolCallId: "c1",
+          content: JSON.stringify({ c: 226 }),
+        });
+        expect(calls[3]![0].data).toMatchObject({ role: "assistant", content: "NVDA is $226" });
+        expect(calls[3]![0].data["toolCalls"]).toBeUndefined();
+
+        // Final SSE done messageId comes from last transaction row
+        expect(res.body).toContain('"messageId":"msg-3"');
+
+        await app.close();
+      });
+
+      it("multi-tool-call: both tool_calls batched into one assistant row, then tool rows, then content", async () => {
+        mockPrisma.chatMessage.create
+          .mockResolvedValueOnce(baseMsgShape("msg-user", "user"))
+          .mockResolvedValueOnce(baseMsgShape("msg-1", "assistant"))
+          .mockResolvedValueOnce(baseMsgShape("msg-2", "tool"))
+          .mockResolvedValueOnce(baseMsgShape("msg-3", "tool"))
+          .mockResolvedValueOnce(baseMsgShape("msg-4", "assistant"));
+
+        mockRouteChat.mockReturnValue(
+          makeStream([
+            { type: "tool_call", id: "c1", name: "get_quote", args: { symbol: "NVDA" } },
+            { type: "tool_call", id: "c2", name: "get_fundamentals_metric", args: { symbol: "NVDA" } },
+            { type: "tool_result", id: "c1", name: "get_quote", result: { c: 226 } },
+            { type: "tool_result", id: "c2", name: "get_fundamentals_metric", result: { pe: 50 } },
+            { type: "token", content: "NVDA at $226, PE 50" },
+            { type: "done", source: "local", messageId: "local-xyz" },
+          ]) as ReturnType<typeof routeChat>
+        );
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/ai/chat/stream",
+          headers: { authorization: bearerFor(user1.id, user1.email) },
+          payload: { workspaceId: "ws-1", message: "compare NVDA" },
+        });
+
+        expect(res.statusCode).toBe(200);
+        // 1 user + 4 transaction rows
+        expect(mockPrisma.chatMessage.create).toHaveBeenCalledTimes(5);
+        expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+
+        type CreateCall = [{ data: Record<string, unknown> }];
+        const calls = mockPrisma.chatMessage.create.mock.calls as CreateCall[];
+
+        // Single assistant row batching both tool calls (critical: both c1 and c2 together)
+        const toolCalls = calls[1]![0].data["toolCalls"] as Array<{ id: string }>;
+        expect(toolCalls).toHaveLength(2);
+        expect(toolCalls[0]!.id).toBe("c1");
+        expect(toolCalls[1]!.id).toBe("c2");
+        expect(calls[1]![0].data.content).toBe("");
+
+        // Tool rows in result-order
+        expect(calls[2]![0].data).toMatchObject({ role: "tool", toolCallId: "c1" });
+        expect(calls[3]![0].data).toMatchObject({ role: "tool", toolCallId: "c2" });
+
+        // Final content assistant
+        expect(calls[4]![0].data).toMatchObject({ role: "assistant", content: "NVDA at $226, PE 50" });
+
+        await app.close();
+      });
+
+      it("pure content turn: transaction with single assistant row, no tool calls", async () => {
+        mockPrisma.chatMessage.create
+          .mockResolvedValueOnce(baseMsgShape("msg-user", "user"))
+          .mockResolvedValueOnce(baseMsgShape("msg-1", "assistant"));
+
+        mockRouteChat.mockReturnValue(
+          makeStream([
+            { type: "token", content: "Hello" },
+            { type: "token", content: " world" },
+            { type: "done", source: "local", messageId: "local-xyz" },
+          ]) as ReturnType<typeof routeChat>
+        );
+
+        const app = await buildApp();
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/ai/chat/stream",
+          headers: { authorization: bearerFor(user1.id, user1.email) },
+          payload: { workspaceId: "ws-1", message: "hi" },
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+        // 1 user create + 1 transaction row
+        expect(mockPrisma.chatMessage.create).toHaveBeenCalledTimes(2);
+
+        type CreateCall = [{ data: Record<string, unknown> }];
+        const calls = mockPrisma.chatMessage.create.mock.calls as CreateCall[];
+
+        expect(calls[1]![0].data).toMatchObject({ role: "assistant", content: "Hello world" });
+        expect(calls[1]![0].data["toolCalls"]).toBeUndefined();
+
+        await app.close();
+      });
+    });
   });
 
   describe("GET /api/ai/history/:workspaceId", () => {
