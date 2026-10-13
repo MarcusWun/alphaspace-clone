@@ -90,16 +90,31 @@ async function* streamOllamaLoop(
   model: string,
   messages: OllamaMessage[]
 ): AsyncIterable<ChatEvent> {
-  const res = await fetch(`${OLLAMA_BASE_URL()}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages,
-      tools: openAiTools,
-      stream: true,
-    }),
-  });
+  const timeoutMs = parseInt(process.env["OLLAMA_REQUEST_TIMEOUT_MS"] ?? "60000", 10);
+  const started = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(`${OLLAMA_BASE_URL()}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages,
+        tools: openAiTools,
+        stream: true,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    const duration_ms = Date.now() - started;
+    const errObj = err as { name?: string };
+    if (errObj.name === "AbortError" || errObj.name === "TimeoutError") {
+      console.warn(JSON.stringify({ event: "ai.ollama.timeout", model, duration_ms, timeout_ms: timeoutMs }));
+      yield { type: "error", source: "local", message: "Ollama request timed out", code: "ollama_timeout" };
+      return;
+    }
+    throw err;
+  }
 
   if (!res.ok) {
     throw new Error(`Ollama error ${res.status}: ${res.statusText}`);
@@ -161,8 +176,9 @@ async function* streamOllamaLoop(
 
       const finishReason = chunk.choices?.[0]?.finish_reason;
       if (finishReason === "tool_calls" || (finishReason === "stop" && pendingToolCalls.size > 0)) {
-        // Dispatch each pending tool call
+        // Dispatch each pending tool call; collect results before mutating messages
         const toolCallMessages: OllamaToolCall[] = [];
+        const toolResults: Array<{ toolCallId: string; resultContent: string }> = [];
         for (const [, tc] of pendingToolCalls) {
           let args: unknown;
           try {
@@ -186,15 +202,18 @@ async function* streamOllamaLoop(
             function: { name: tc.name, arguments: tc.argsJson },
           });
 
-          messages.push({ role: "tool", tool_call_id: tc.id, content: resultContent });
+          toolResults.push({ toolCallId: tc.id, resultContent });
         }
 
-        // Append assistant message with tool calls
+        // OpenAI protocol: assistant(tool_calls) MUST precede all tool-role messages
         messages.push({
           role: "assistant",
           content: accumulatedContent,
           tool_calls: toolCallMessages,
         });
+        for (const { toolCallId, resultContent } of toolResults) {
+          messages.push({ role: "tool", tool_call_id: toolCallId, content: resultContent });
+        }
 
         pendingToolCalls.clear();
         accumulatedContent = "";

@@ -104,6 +104,11 @@ export const aiRoutes: FastifyPluginAsync = async (fastify) => {
             request.log.info({ tool: event.name, duration_ms: 0, ok: true }, "ai.tool.result");
           } else if (event.type === "done") {
             doneEvent = event;
+          } else if (event.type === "error") {
+            clearInterval(heartbeatInterval);
+            request.log.warn({ code: event.code, message: event.message }, "ai.chat.error");
+            reply.raw.end();
+            return;
           }
         }
       } catch (err) {

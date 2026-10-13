@@ -443,6 +443,20 @@ All routes require authentication. Workspace ownership is verified per-request �
 
 - **Errors:** 404 if workspace not found; 400 if body invalid; 401 if unauthenticated.
 
+**Follow-up conversation ordering guarantee (hotfix 2026-10-13):**
+- Both local (Ollama) and cloud (Anthropic) paths build follow-up messages in protocol order: `[... history, user, assistant(tool_calls|tool_use), tool_result_1, tool_result_2, ...]`. The assistant message carrying `tool_calls` / `tool_use` blocks ALWAYS precedes the first tool-result message. Enforced by regression tests in `ollama.test.ts` and `anthropic.test.ts`.
+- Ollama: `assistant({role:"assistant", tool_calls:[...]})` THEN `{role:"tool", tool_call_id, content}` per tool. OpenAI/Ollama chat protocol requirement.
+- Anthropic: `{role:"assistant", content:[..., {type:"tool_use", id, name, input}]}` THEN `{role:"user", content:[{type:"tool_result", tool_use_id, content}]}`. All tool_result blocks bundled into one user message referencing the tool_use ids.
+
+**SSE error event (hotfix 2026-10-13):**
+The `error` ChatEvent `{ type: "error", source: "local"|"cloud", message: string, code: string }` is yielded when the generator encounters a non-throwing failure (e.g., Ollama timeout). The SSE route forwards the event then closes the stream. Clients should treat `type:"error"` as a terminal event (no `done` follows). Code `ollama_timeout` means `OLLAMA_REQUEST_TIMEOUT_MS` fired.
+
+**Observability — new log event (hotfix 2026-10-13):**
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| `ai.ollama.timeout` | warn | `model`, `duration_ms`, `timeout_ms` |
+
 **Routing logic:**
 - `cloudActive = isCloudConfigured()` — true only when `ANTHROPIC_API_KEY` is plausibly-real (≥20 chars, not matching `your_*`).
 - `shouldEscalate = cloudActive && (deep || estimatedTokens > 96000)`.
@@ -514,6 +528,7 @@ Default behavior (`.env.example` placeholder value) → **always false** → all
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API base URL |
 | `OLLAMA_MODEL` | `qwen3.6:27b` | Ollama model to use |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Keep model resident (`-1` = forever) |
+| `OLLAMA_REQUEST_TIMEOUT_MS` | `60000` | Abort Ollama fetch after this many ms; emits `ai.ollama.timeout` log and closes SSE with an error event |
 | `ANTHROPIC_API_KEY` | `your_anthropic_api_key_here` | Anthropic key (placeholder keeps cloud dormant) |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic model (dormant unless key is real) |
 

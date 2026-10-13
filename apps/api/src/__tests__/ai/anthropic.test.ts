@@ -141,4 +141,60 @@ describe("streamAnthropicResponse", () => {
     const done = events.find((e) => (e as { type: string }).type === "done");
     expect((done as { source: string }).source).toBe("cloud");
   });
+
+  it("ORDERING-REGRESSION: assistant(tool_use) appears before user(tool_result) in second-turn request, tool_use_id matches", async () => {
+    mockDispatch.mockResolvedValue({ ok: true, result: { c: 187.5 } });
+
+    const firstStream = makeSSEStream([
+      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu-nvda", name: "get_quote" } })}`,
+      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"symbol":"NVDA"}' } })}`,
+      messageStopEvent(),
+    ]);
+    const secondStream = makeSSEStream([
+      textDeltaEvent("NVDA is $187.50"),
+      messageStopEvent(),
+    ]);
+
+    const fetchCalls: Array<[string, RequestInit]> = [];
+    global.fetch = vi.fn().mockImplementation((url: string, init: RequestInit) => {
+      fetchCalls.push([url, init]);
+      return Promise.resolve({
+        ok: true,
+        body: fetchCalls.length === 1 ? firstStream : secondStream,
+      });
+    }) as typeof fetch;
+
+    await collectEvents(streamAnthropicResponse(makeCtx()));
+
+    expect(fetchCalls).toHaveLength(2);
+
+    const secondBody = JSON.parse(fetchCalls[1]![1]!.body as string) as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    const msgs = secondBody.messages;
+
+    // Find the assistant message (carries tool_use content block) and the user message (carries tool_result)
+    const assistantIdx = msgs.findIndex(
+      (m) =>
+        m.role === "assistant" &&
+        Array.isArray(m.content) &&
+        (m.content as Array<{ type: string }>).some((b) => b.type === "tool_use")
+    );
+    const userIdx = msgs.findIndex(
+      (m) =>
+        m.role === "user" &&
+        Array.isArray(m.content) &&
+        (m.content as Array<{ type: string }>).some((b) => b.type === "tool_result")
+    );
+
+    expect(assistantIdx).toBeGreaterThanOrEqual(0);
+    expect(userIdx).toBeGreaterThanOrEqual(0);
+    // CRITICAL: assistant(tool_use) MUST appear before user(tool_result)
+    expect(assistantIdx).toBeLessThan(userIdx);
+
+    // tool_use_id in the tool_result block must reference the tool_use id
+    const userMsg = msgs[userIdx] as { content: Array<{ type: string; tool_use_id?: string }> };
+    const toolResultBlock = userMsg.content.find((b) => b.type === "tool_result");
+    expect(toolResultBlock?.tool_use_id).toBe("tu-nvda");
+  });
 });
