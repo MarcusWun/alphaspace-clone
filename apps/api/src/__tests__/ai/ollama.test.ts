@@ -141,4 +141,93 @@ describe("streamOllamaResponse", () => {
 
     await expect(collectEvents(streamOllamaResponse(makeCtx()))).rejects.toThrow("Ollama error 503");
   });
+
+  it("ORDERING-REGRESSION: assistant(tool_calls) appears before tool-role messages in second-turn request", async () => {
+    mockDispatch.mockResolvedValue({ ok: true, result: { c: 187.5 } });
+
+    const firstStream = makeSSEStream([
+      toolCallChunk("tc-1", "get_quote", '{"symbol":"NVDA"}', true),
+      doneChunk(),
+    ]);
+    const secondStream = makeSSEStream([
+      tokenChunk("NVDA is $187.50"),
+      doneChunk(),
+    ]);
+
+    const fetchCalls: Array<[string, RequestInit]> = [];
+    global.fetch = vi.fn().mockImplementation((url: string, init: RequestInit) => {
+      fetchCalls.push([url, init]);
+      return Promise.resolve({
+        ok: true,
+        body: fetchCalls.length === 1 ? firstStream : secondStream,
+      });
+    }) as typeof fetch;
+
+    const events = await collectEvents(streamOllamaResponse(makeCtx()));
+
+    // Two fetch calls: first turn (user message) + second turn (after tool result)
+    expect(fetchCalls).toHaveLength(2);
+
+    const secondBody = JSON.parse(fetchCalls[1]![1]!.body as string) as {
+      messages: Array<{ role: string; tool_calls?: unknown[]; tool_call_id?: string }>;
+    };
+    const msgs = secondBody.messages;
+
+    // Find the assistant-with-tool_calls message and the first tool-role message
+    const assistantIdx = msgs.findIndex((m) => m.role === "assistant" && Array.isArray(m.tool_calls));
+    const toolIdx = msgs.findIndex((m) => m.role === "tool" && m.tool_call_id === "tc-1");
+
+    expect(assistantIdx).toBeGreaterThanOrEqual(0);
+    expect(toolIdx).toBeGreaterThanOrEqual(0);
+    // CRITICAL: assistant MUST appear before the tool-role message
+    expect(assistantIdx).toBeLessThan(toolIdx);
+
+    // Final event is done with source:local
+    const done = events.find((e) => (e as { type: string }).type === "done");
+    expect((done as { source: string }).source).toBe("local");
+  });
+
+  it("TIMEOUT-REGRESSION: emits error event and ai.ollama.timeout log when fetch times out", async () => {
+    vi.stubEnv("OLLAMA_REQUEST_TIMEOUT_MS", "50");
+
+    // Return a pre-aborted signal so the test runs instantly without real timer delay
+    const controller = new AbortController();
+    // DOMException(message, name) — second arg sets .name; DOMException.name is read-only
+    const timeoutErr = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    controller.abort(timeoutErr);
+    const abortSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+
+    // fetch receives an already-aborted signal and rejects immediately
+    global.fetch = vi.fn().mockImplementation((_url: string, opts?: RequestInit) => {
+      const sig = opts?.signal;
+      if (sig?.aborted) {
+        return Promise.reject(sig.reason ?? timeoutErr);
+      }
+      return new Promise(() => {}); // hang — should not be reached
+    }) as typeof fetch;
+
+    const warnSpy = vi.spyOn(console, "warn");
+
+    const events = await collectEvents(streamOllamaResponse(makeCtx()));
+
+    // Generator must terminate and yield an error event
+    const errEvent = events.find((e) => (e as { type: string }).type === "error") as
+      | { type: "error"; source: string; code: string }
+      | undefined;
+    expect(errEvent).toBeDefined();
+    expect(errEvent?.source).toBe("local");
+    expect(errEvent?.code).toBe("ollama_timeout");
+
+    // Structured log line must be emitted
+    const warnCalls = warnSpy.mock.calls.map((c) => c[0] as string);
+    const timeoutLog = warnCalls.find((s) => s.includes("ai.ollama.timeout"));
+    expect(timeoutLog).toBeDefined();
+    const parsed = JSON.parse(timeoutLog!) as { event: string; model: string; timeout_ms: number };
+    expect(parsed.event).toBe("ai.ollama.timeout");
+    expect(parsed.model).toBe("test-model");
+    expect(parsed.timeout_ms).toBe(50);
+
+    abortSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
 });

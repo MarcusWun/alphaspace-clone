@@ -9,6 +9,7 @@ interface AnthropicContentBlock {
   type: string;
   text?: string;
   id?: string;
+  tool_use_id?: string;
   name?: string;
   input?: unknown;
   content?: string;
@@ -159,9 +160,10 @@ async function* streamAnthropicLoop(
 
             toolResults.push({
               type: "tool_result",
-              id: tc.id,
+              // Anthropic protocol requires tool_use_id (not id) to reference the tool_use block
+              tool_use_id: tc.id,
               content: resultContent,
-            });
+            } as AnthropicContentBlock);
           }
 
           // Append assistant message with tool use, then user message with results
