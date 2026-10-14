@@ -1,6 +1,7 @@
 import type { ChatEvent, RouterContext } from "./types.js";
 import { openAiTools, dispatchTool } from "./tools.js";
-import { sanitizeHistory } from "./historyLoader.js";
+import { sanitizeHistory, toOpenAiToolCalls } from "./historyLoader.js";
+import type { StoredToolCall } from "./historyLoader.js";
 
 const OLLAMA_BASE_URL = () => process.env["OLLAMA_BASE_URL"] ?? "http://localhost:11434";
 const OLLAMA_MODEL = () => process.env["OLLAMA_MODEL"] ?? "qwen3.6:27b";
@@ -19,7 +20,7 @@ function historyToMessages(history: RouterContext["history"]): OllamaMessage[] {
       return {
         role: "assistant" as const,
         content: m.content || "",
-        tool_calls: m.toolCalls as unknown as OllamaToolCall[],
+        tool_calls: toOpenAiToolCalls(m.toolCalls as unknown as StoredToolCall[]),
       };
     }
     return {

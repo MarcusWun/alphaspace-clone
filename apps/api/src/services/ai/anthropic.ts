@@ -1,6 +1,7 @@
 import type { ChatEvent, RouterContext } from "./types.js";
 import { anthropicTools, dispatchTool } from "./tools.js";
-import { sanitizeHistory } from "./historyLoader.js";
+import { sanitizeHistory, toAnthropicToolUseBlocks, toAnthropicToolResultBlock } from "./historyLoader.js";
+import type { StoredToolCall } from "./historyLoader.js";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -27,7 +28,7 @@ interface AnthropicStreamEvent {
   content_block?: AnthropicContentBlock;
 }
 
-function historyToAnthropicMessages(
+export function historyToAnthropicMessages(
   history: RouterContext["history"],
   userMessage: string
 ): Array<{ role: "user" | "assistant"; content: string | AnthropicContentBlock[] }> {
@@ -36,10 +37,22 @@ function historyToAnthropicMessages(
   for (const m of history) {
     if (m.role === "user") {
       msgs.push({ role: "user", content: m.content });
+    } else if (m.role === "assistant" && m.toolCalls !== null) {
+      const blocks: AnthropicContentBlock[] = [];
+      if (m.content) blocks.push({ type: "text", text: m.content });
+      blocks.push(...toAnthropicToolUseBlocks(m.toolCalls as unknown as StoredToolCall[]));
+      msgs.push({ role: "assistant", content: blocks });
     } else if (m.role === "assistant") {
       msgs.push({ role: "assistant", content: m.content });
+    } else if (m.role === "tool") {
+      const block = toAnthropicToolResultBlock(m.toolCallId ?? "", m.content);
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "user" && Array.isArray(last.content)) {
+        (last.content as AnthropicContentBlock[]).push(block);
+      } else {
+        msgs.push({ role: "user", content: [block] });
+      }
     }
-    // tool messages are folded into the preceding user message in Anthropic format
   }
 
   msgs.push({ role: "user", content: userMessage });

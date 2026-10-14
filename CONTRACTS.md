@@ -477,6 +477,16 @@ Multi-tool-call prompts produce one batched `assistant{toolCalls:[c1,c2,...]}` r
 
 `tool_result` events always produce a `role:"tool"` row with `toolCallId` populated. No row ever combines `toolCalls` and non-empty `content` — these are protocol-distinct turns and must be stored separately.
 
+**Provider shape translation — `historyLoader.ts` is the sole source of truth.** Stored tool-call rows use the internal shape `{id: string, name: string, args: object}`. Provider clients must NEVER cast this raw shape into a request body. Always call the appropriate mapper:
+
+| Stored shape | Provider | Mapper | Output |
+|---|---|---|---|
+| `{id, name, args}` | Ollama / OpenAI-compatible | `toOpenAiToolCalls(stored)` | `{id, type:"function", function:{name, arguments:string}}` — `arguments` is `JSON.stringify(args ?? {})`, always a string |
+| `{id, name, args}` | Anthropic | `toAnthropicToolUseBlocks(stored)` | `{type:"tool_use", id, name, input:object}` — `input` is the args object (NOT stringified; Anthropic takes it as an object) |
+| `tool`-role row | Anthropic | `toAnthropicToolResultBlock(toolCallId, content)` | `{type:"tool_result", tool_use_id, content:string}` — bundled into a `{role:"user", content:[...]}` message; consecutive tool rows coalesce into one user message |
+
+Exported from `apps/api/src/services/ai/historyLoader.ts`: `StoredToolCall`, `OpenAiToolCall`, `AnthropicToolUseBlock`, `AnthropicToolResultBlock`, `toOpenAiToolCalls`, `toAnthropicToolUseBlocks`, `toAnthropicToolResultBlock`.
+
 **History sanitizer (`sanitizeHistory`):** On each request, history loaded from DB is passed through `sanitizeHistory` before being mapped to provider messages. It drops any `assistant` row with `toolCalls` that is not followed by matching `tool` rows in order (all-or-nothing; drops the entire orphaned slice to the next `user` row). This protects against legacy malformed data. When rows are dropped, a structured log line is emitted (see observability table below).
 
 **New observability log line (hotfix 2026-10-13):**
