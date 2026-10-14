@@ -256,7 +256,7 @@ Rewrote all 7 descriptions in `openAiTools` to specify (a) data returned, (b) wh
 
 ### Fix Commit
 
-`[to be filled after commit]`
+`9e7331b`
 
 ### Prevention
 
