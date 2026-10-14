@@ -537,6 +537,8 @@ Dispatcher export: `dispatchTool(name: string, rawArgs: unknown): Promise<{ ok: 
 
 Both `openAiTools` (for Ollama/OpenAI-compatible endpoints) and `anthropicTools` (for Anthropic Messages API) are exported from `services/ai/tools.ts`.
 
+**AI Behavioral Contract (hotfix 2026-10-14):** `openAiTools[].function.description` (consumed by Ollama; derived into `anthropicTools` by `.map()`) and `SYSTEM_PROMPT` (exported from `services/ai/prompt.ts`, prepended to every provider request) are part of the AI behavioral contract. They directly determine model tool-routing behavior. Changes to either shift model routing and require a sibling PRD + QA smoke of acceptance prompts before merging. Description strings must follow the three-part pattern: (a) data returned, (b) keyword cue for when to use, (c) authoritative vs supplementary label.
+
 ---
 
 ### `cloudConfig.ts` contract

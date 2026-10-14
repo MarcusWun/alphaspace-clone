@@ -221,3 +221,43 @@ In `apps/api/src/__tests__/alphaVantage.test.ts`:
 | NB-2-P2A | Phase 2a baseline discovery | **FIXED in hotfix/5y-baseline.** `StockChartPanel` computed `fromBucket`/`toBucket` via `bucketedFrom(resolution)` but voided both values (`void fromBucket; void toBucket;`), so `useCandles` always received the default 370-day D window regardless of selected range. 1D range rendered ~30 days of 60-min bars instead of ~2 days. Fix: `bucketedWindowForTimeRange(timeRange)` now drives `from`/`to`; `useCandles` extended to accept optional `fromOverride`/`toOverride`. | Frontend | Fixed this commit (hotfix/5y-baseline). |
 | NB-3 | PRD §10 | PRD §10 says "Sign in via Clerk" — stale wording. Implementation uses Auth.js v5 (NextAuth). No code change needed; PRD correction required. | CTO | Route to CTO for PRD v1.2 correction. |
 | NB-4 | `.nvmrc` vs CI | `.nvmrc` specifies Node 24; current GitHub Actions runner and A9 runner use Node 22. Either bump the A9 runner to Node 24 or relax `engines.node` in `package.json` from `>=24` to `>=22`. | Marcus | Marcus's call — runner upgrade or engine relax before Phase 2. |
+
+---
+
+## AI-TOOL-DESCRIPTIONS (2026-10-14)
+
+### Symptom
+
+User prompted *"Give me a summary of MSFT's most recent earnings announcement."* on 2026-10-13 22:52 EDT. The model called `get_company_news(MSFT)` four times instead of `get_fundamentals_earnings(MSFT)`. Finnhub `/company-news` returns noisy market-wide headlines tagged with MSFT (31 earnings headlines about IBM/Adobe/Palantir, not MSFT). The resulting 385-token reply was long but low-signal.
+
+### Root Cause
+
+Terse tool descriptions in `apps/api/src/services/ai/tools.ts` provided no routing cues: `get_fundamentals_earnings` was described as "Get EPS earnings history for a stock." — nothing indicated it was the authoritative tool for earnings questions. The word "news" in `get_company_news` was a stronger lexical match for "announcement" than anything in the earnings tool. No system prompt framed the assistant's role or encouraged chaining.
+
+### Fix
+
+Rewrote all 7 descriptions in `openAiTools` to specify (a) data returned, (b) when to use (keyword cue), (c) authoritative vs supplementary. Added `prompt.ts` with `SYSTEM_PROMPT` that frames the assistant as a stock research assistant and nudges 2–3-tool chains for compound questions. Wired `SYSTEM_PROMPT` into both providers: Ollama as `messages[0]` (`role:"system"`), Anthropic as top-level `system` field (protocol-specific: Anthropic rejects `role:"system"` in the messages array).
+
+### Affected Files
+
+- `apps/api/src/services/ai/tools.ts` — all 7 `description` fields rewritten
+- `apps/api/src/services/ai/prompt.ts` — new file, exports `SYSTEM_PROMPT`
+- `apps/api/src/services/ai/ollama.ts` — imports `SYSTEM_PROMPT`, prepends `{role:"system"}` as `messages[0]`
+- `apps/api/src/services/ai/anthropic.ts` — imports `SYSTEM_PROMPT`, adds `system` as top-level field in fetch body
+- `apps/api/src/__tests__/ai/tools.descriptions.test.ts` — new: description-substring assertions for all 7 tools
+- `apps/api/src/__tests__/ai/ollama.test.ts` — new SYSTEM-PROMPT test: asserts `messages[0]` shape
+- `apps/api/src/__tests__/ai/anthropic.test.ts` — extended "sends correct request headers and body": asserts `body.system === SYSTEM_PROMPT`
+
+### Regression Tests
+
+- `tools.descriptions.test.ts` (8 tests): array length 7, key-phrase substring assertions per tool
+- `ollama.test.ts` SYSTEM-PROMPT test: asserts `messages[0].role === "system"` and `messages[0].content === SYSTEM_PROMPT`
+- `anthropic.test.ts` "sends correct request headers and body": asserts `body.system === SYSTEM_PROMPT`
+
+### Fix Commit
+
+`9e7331b`
+
+### Prevention
+
+Tool descriptions must (a) name the data returned, (b) give a keyword cue for when to use, (c) label authoritative vs supplementary. New tools require the same discipline. Description changes require a sibling PRD because they shift model routing behavior. Same-class sweep: confirm no second call site builds the Ollama/Anthropic request body without the system prompt.
