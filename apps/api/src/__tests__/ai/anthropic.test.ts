@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { streamAnthropicResponse } from "../../services/ai/anthropic.js";
 import type { RouterContext } from "../../services/ai/types.js";
+import { SYSTEM_PROMPT } from "../../services/ai/prompt.js";
 
 vi.mock("../../services/ai/tools.js", () => ({
   openAiTools: [],
@@ -72,9 +73,11 @@ describe("streamAnthropicResponse", () => {
     const body = JSON.parse(init.body as string) as {
       model: string;
       stream: boolean;
+      system: string;
     };
     expect(body.model).toBe("claude-test-model");
     expect(body.stream).toBe(true);
+    expect(body.system).toBe(SYSTEM_PROMPT);
   });
 
   it("emits token events and done with source:cloud", async () => {

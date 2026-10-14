@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { streamOllamaResponse } from "../../services/ai/ollama.js";
 import type { RouterContext } from "../../services/ai/types.js";
+import { SYSTEM_PROMPT } from "../../services/ai/prompt.js";
 
 vi.mock("../../services/ai/tools.js", () => ({
   openAiTools: [],
@@ -185,6 +186,23 @@ describe("streamOllamaResponse", () => {
     // Final event is done with source:local
     const done = events.find((e) => (e as { type: string }).type === "done");
     expect((done as { source: string }).source).toBe("local");
+  });
+
+  it("SYSTEM-PROMPT: messages[0] has role 'system' and content matching SYSTEM_PROMPT", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      body: makeSSEStream([tokenChunk("Hi"), doneChunk()]),
+    });
+    global.fetch = mockFetch as typeof fetch;
+
+    await collectEvents(streamOllamaResponse(makeCtx()));
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(body.messages[0]!.role).toBe("system");
+    expect(body.messages[0]!.content).toBe(SYSTEM_PROMPT);
   });
 
   it("TIMEOUT-REGRESSION: emits error event and ai.ollama.timeout log when fetch times out", async () => {

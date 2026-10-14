@@ -2,6 +2,7 @@ import type { ChatEvent, RouterContext } from "./types.js";
 import { anthropicTools, dispatchTool } from "./tools.js";
 import { sanitizeHistory, toAnthropicToolUseBlocks, toAnthropicToolResultBlock } from "./historyLoader.js";
 import type { StoredToolCall } from "./historyLoader.js";
+import { SYSTEM_PROMPT } from "./prompt.js";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -83,6 +84,7 @@ async function* streamAnthropicLoop(
     body: JSON.stringify({
       model,
       max_tokens: 8192,
+      system: SYSTEM_PROMPT,
       messages,
       tools: anthropicTools,
       stream: true,

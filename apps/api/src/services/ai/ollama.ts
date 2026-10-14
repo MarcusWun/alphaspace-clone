@@ -2,6 +2,7 @@ import type { ChatEvent, RouterContext } from "./types.js";
 import { openAiTools, dispatchTool } from "./tools.js";
 import { sanitizeHistory, toOpenAiToolCalls } from "./historyLoader.js";
 import type { StoredToolCall } from "./historyLoader.js";
+import { SYSTEM_PROMPT } from "./prompt.js";
 
 const OLLAMA_BASE_URL = () => process.env["OLLAMA_BASE_URL"] ?? "http://localhost:11434";
 const OLLAMA_MODEL = () => process.env["OLLAMA_MODEL"] ?? "qwen3.6:27b";
@@ -37,6 +38,7 @@ interface OllamaToolCall {
 }
 
 type OllamaMessage =
+  | { role: "system"; content: string }
   | { role: "user" | "assistant"; content: string; tool_calls?: OllamaToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string };
 
@@ -82,6 +84,7 @@ export async function* streamOllamaResponse(ctx: RouterContext): AsyncIterable<C
   const model = OLLAMA_MODEL();
   const sanitized = sanitizeHistory(ctx.history, ctx.workspaceId);
   const messages: OllamaMessage[] = [
+    { role: "system", content: SYSTEM_PROMPT },
     ...historyToMessages(sanitized),
     { role: "user", content: ctx.userMessage },
   ];

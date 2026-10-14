@@ -48,7 +48,7 @@ export const openAiTools = [
     type: "function",
     function: {
       name: "get_quote",
-      description: "Get the current price, change, and bid/ask for a stock symbol.",
+      description: "Current live stock price, day change, and bid/ask. Use for 'what's X trading at' or 'current price' questions.",
       parameters: {
         type: "object",
         required: ["symbol"],
@@ -60,7 +60,7 @@ export const openAiTools = [
     type: "function",
     function: {
       name: "get_candles",
-      description: "Get historical OHLCV candle data for a stock.",
+      description: "Historical OHLC price bars at the requested resolution. Use for charts or price history questions.",
       parameters: {
         type: "object",
         required: ["symbol", "resolution", "from", "to"],
@@ -77,7 +77,7 @@ export const openAiTools = [
     type: "function",
     function: {
       name: "get_company_news",
-      description: "Get recent news headlines for a stock symbol.",
+      description: "Recent news headlines mentioning the ticker, often market-wide chatter. Use for general sentiment or recent coverage questions, not for authoritative earnings numbers.",
       parameters: {
         type: "object",
         required: ["symbol", "from", "to"],
@@ -93,7 +93,7 @@ export const openAiTools = [
     type: "function",
     function: {
       name: "get_fundamentals_metric",
-      description: "Get fundamental metrics (P/E, EV/EBITDA, margins, etc.) for a stock.",
+      description: "Core valuation and financial metrics (P/E, EV/EBITDA, margins, 52-week range). Use for valuation, growth, or balance-sheet questions.",
       parameters: {
         type: "object",
         required: ["symbol"],
@@ -105,7 +105,7 @@ export const openAiTools = [
     type: "function",
     function: {
       name: "get_fundamentals_earnings",
-      description: "Get EPS earnings history for a stock.",
+      description: "Quarterly EPS history: analyst estimate vs. actual, beat/miss for the last ~8 quarters. Use for ANY earnings-related question — results, beat/miss, estimate accuracy, 'latest earnings' prompts.",
       parameters: {
         type: "object",
         required: ["symbol"],
@@ -117,7 +117,7 @@ export const openAiTools = [
     type: "function",
     function: {
       name: "get_fundamentals_filings",
-      description: "Get recent SEC filings for a stock.",
+      description: "Recent SEC filings (10-K, 10-Q, 8-K) with filing dates and links. Use for regulatory or disclosure questions.",
       parameters: {
         type: "object",
         required: ["symbol"],
@@ -132,7 +132,7 @@ export const openAiTools = [
     type: "function",
     function: {
       name: "get_fundamentals_recommendation",
-      description: "Get analyst recommendation distribution for a stock.",
+      description: "Monthly analyst recommendation distribution (strongBuy / buy / hold / sell / strongSell counts). Use for 'what do analysts think' or sentiment questions.",
       parameters: {
         type: "object",
         required: ["symbol"],
