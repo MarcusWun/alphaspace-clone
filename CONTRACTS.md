@@ -249,6 +249,8 @@ interface LayoutItem {
 
 **Restore invariant:** Any `grid` item whose `i` value doesn't appear in `panels[].id` is silently dropped. This prevents key drift.
 
+**Resize (canvas-resize, 2026-10-19):** `workspaces.layout` JSONB continues to carry `w`/`h` in `grid[]` items with no schema change. After the resize feature was enabled, `w`/`h` reflect user-resized dimensions rather than just registry defaults. `minW`/`minH` are not persisted (stripped in `handleGridChange`); they are injected at render time from `PanelRegistry`. Legacy `grid` items (saved before resize was enabled) are valid — resize handles are added at render time via `rglLayout.map()`.
+
 ---
 
 ## Redis Pub/Sub Channels

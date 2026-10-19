@@ -62,8 +62,8 @@ export const PANEL_REGISTRY: Record<PanelType, PanelRegistryEntry> = {
   ai_assistant: {
     id: "ai_assistant",
     label: "AI Assistant",
-    defaultW: 4,
-    defaultH: 10,
+    defaultW: 5,
+    defaultH: 12,
     minW: 3,
     minH: 6,
     defaultProps: {},
