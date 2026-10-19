@@ -190,6 +190,7 @@ export function CanvasShell({
     h: item.h,
     minW: item.minW,
     minH: item.minH,
+    resizeHandles: ["se", "s", "e"] as const,
   }));
 
   return (
@@ -227,6 +228,7 @@ export function CanvasShell({
             onLayoutChange={handleGridChange}
             gridConfig={{ cols: COLS, rowHeight: ROW_HEIGHT, margin: [8, 8] as [number, number], containerPadding: [8, 8] as [number, number] }}
             dragConfig={{ handle: ".panel-drag-handle" }}
+            resizeConfig={{ enabled: true, handles: ["se", "s", "e"] as const }}
             compactor={verticalCompactor}
           >
             {panels.map((panel) => (
