@@ -611,7 +611,7 @@ Seven tools are exposed to the AI model. Each tool has a Zod validation schema; 
 |---|---|---|
 | `get_quote` | `{ symbol: string }` | `services/finnhub.ts::getQuote(symbol)` |
 | `get_candles` | `{ symbol: string, resolution: string, from: string, to: string }` | `services/candles.ts::getCandles(params)` |
-| `get_company_news` | `{ symbol: string, from: string, to: string }` | `services/finnhub.ts::getCompanyNews(symbol, from, to)` |
+| `get_company_news` | `{ symbol: string, from: string, to: string }` | `services/news/index.ts::getCompanyNews(symbol, from, to)` |
 | `get_fundamentals_metric` | `{ symbol: string }` | `services/fundamentals.ts::getStockMetric(symbol)` (24h TTL) |
 | `get_fundamentals_earnings` | `{ symbol: string }` | `services/fundamentals.ts::getStockEarnings(symbol)` |
 | `get_fundamentals_filings` | `{ symbol: string, limit?: number(1-50) }` | `services/fundamentals.ts::getStockFilings(symbol, limit)` |
