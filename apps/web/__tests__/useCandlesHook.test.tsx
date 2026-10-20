@@ -52,6 +52,16 @@ vi.mock("lightweight-charts", () => ({
   CandlestickSeries: { _type: "candle" },
 }));
 
+vi.mock("@/components/canvas/CanvasContext", () => ({
+  useCanvas: () => ({
+    workspaceId: "ws-test",
+    addPanel: vi.fn(),
+    updatePanelProps: vi.fn(),
+    removePanel: vi.fn(),
+  }),
+  CanvasProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 vi.mock("next-auth/react", () => ({
   signOut: vi.fn(),
   useSession: vi.fn(() => ({ data: null, status: "unauthenticated" })),

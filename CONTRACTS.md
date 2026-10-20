@@ -666,3 +666,63 @@ The web app consumes the AI Assistant contracts via three exports:
 **Type strategy:** `ChatEvent` and `ChatMessage` types are locally mirrored in `apps/web/lib/queries/ai.ts`. They are NOT shared via `packages/types/` — these are frontend-only SSE/API shapes that don't need to cross the package boundary.
 
 **NB-1 UX caveat (history reappear):** The DELETE endpoint uses a 30s Redis sentinel. During the undo window, `GET /api/ai/history` returns `[]`. After the sentinel expires (~30s), history rows reappear in GET responses until a new POST overwrites them. The frontend presents a 30s "undo" banner after "New chat" but does NOT work around this backend behavior — if the user reloads after 30s without sending a new message, old history may reappear. This is a known carry-forward (NB-1).
+
+---
+
+## Panel Persistence — Workspace Config Write Path
+
+**Feature:** Panel config persistence via `useSavePanelConfig` hook (PRD: alphaspace-clone-persistence-yahoo-news-article-viewer-prd.md).
+
+### Single-writer discipline
+
+Panel-level config changes flow through ONE write path only:
+
+```
+useSavePanelConfig(panelId) → save(next)
+  ↓ 500ms debounce
+CanvasContext.updatePanelProps(panelId, next)
+  ↓ synchronous merge in CanvasShell.panels state
+emitChange(nextPanels, grid)
+  ↓ 300ms debounce (existing CanvasShell debounce)
+onLayoutChange({ panels, grid })
+  ↓ React Query mutation
+PUT /api/workspaces/:id  { layout: { panels, grid } }
+```
+
+**Total worst-case latency to DB:** ~800ms (500 + 300ms debounces).
+
+**Do NOT**: call `updateWorkspace` directly from a panel hook, or GET-then-PUT from panel components. The single-writer path above owns all HTTP writes for panel config.
+
+### Panels wired for persistence
+
+| Panel | Fields saved |
+|---|---|
+| ComparisonChartPanel | `tickers`, `timeRange`, `customFrom`, `customTo` |
+| StockChartPanel | `activeTicker` (symbol), `timeRange` |
+| FundamentalsPanel | `activeTicker` (symbol) |
+
+### Article panel (spawned-only)
+
+`article` panels are **never** created via the toolbar "Add panel" buttons. They are spawned exclusively by clicking a news item in `NewsFeedPanel`. Config: `{ url: string, title?: string }`.
+
+Registration: `PanelRegistry.PANEL_REGISTRY.article` (6w × 10h, min 4w × 6h). Excluded from `TOOLBAR_PANELS`; included in `RENDERED_PANELS` so `renderPanel` can dispatch to `ArticlePanel`.
+
+### `GET /api/article/extract?url=<encoded>`
+
+- **Auth:** required
+- **Query params:** `url` (URL-encoded string)
+- **Response 200 (success):**
+  ```json
+  { "data": { "status": "ok", "article": { "title": "...", "content": "<sanitized-html>", "excerpt": "...", "author": "Jane", "publishedAt": "2026-10-19T10:00:00Z", "siteName": "Reuters", "length": 1500 } } }
+  ```
+- **Response 200 (fallback — paywalled / short content / extraction error):**
+  ```json
+  { "data": { "status": "fallback", "error": "Content too short" } }
+  ```
+- **Cache:** Redis 24h TTL per URL (SHA-256 key).
+- **Frontend:** `ArticlePanel` uses React Query key `["article", url]` with `staleTime: 24h`.
+- **XSS note:** `content` field is DOMPurify-sanitized server-side before caching. Frontend renders via `dangerouslySetInnerHTML` — relies on backend sanitization.
+
+### Query key used for workspace invalidation
+
+`workspaceKeys.single(workspaceId)` (from `apps/web/lib/queries/workspaces.ts`). `workspaceKeys.current` does NOT exist — do not invent it.

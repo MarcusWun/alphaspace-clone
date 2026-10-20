@@ -73,6 +73,16 @@ vi.mock("@/lib/queries/market", async (importOriginal) => {
   };
 });
 
+vi.mock("@/components/canvas/CanvasContext", () => ({
+  useCanvas: () => ({
+    workspaceId: "ws-test",
+    addPanel: vi.fn(),
+    updatePanelProps: vi.fn(),
+    removePanel: vi.fn(),
+  }),
+  CanvasProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 // Mock TradingView to avoid canvas requirement in jsdom
 vi.mock("lightweight-charts", () => ({
   createChart: vi.fn(() => ({

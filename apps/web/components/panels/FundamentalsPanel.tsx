@@ -1,6 +1,8 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useTickerStore } from "@/lib/stores/tickerStore";
+import { useSavePanelConfig } from "@/lib/hooks/useSavePanelConfig";
 import { FundamentalsMetrics } from "./FundamentalsMetrics";
 import { FundamentalsEarnings } from "./FundamentalsEarnings";
 import { FundamentalsFinancials } from "./FundamentalsFinancials";
@@ -25,6 +27,17 @@ const SECTIONS = [
 export function FundamentalsPanel({ panelId, symbol: symbolProp }: FundamentalsPanelProps) {
   const activeTicker = useTickerStore((s) => s.activeTicker);
   const effectiveSymbol = symbolProp ?? activeTicker ?? DEFAULT_SYMBOL;
+
+  // Persistence: save activeTicker back to workspace on change
+  const save = useSavePanelConfig(panelId);
+  const isMountRef = useRef(true);
+  useEffect(() => {
+    if (isMountRef.current) {
+      isMountRef.current = false;
+      return;
+    }
+    save({ activeTicker: effectiveSymbol });
+  }, [effectiveSymbol]); // save intentionally omitted (stable ref via useMemo)
 
   return (
     <div className="flex flex-col gap-3 h-full overflow-y-auto" data-panel-id={panelId}>

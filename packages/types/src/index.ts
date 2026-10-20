@@ -6,7 +6,8 @@ export type PanelType =
   | "stock_chart"
   | "news_feed"
   | "fundamentals"
-  | "ai_assistant";
+  | "ai_assistant"
+  | "article";
 
 export interface PanelConfig {
   id: string; // UUID

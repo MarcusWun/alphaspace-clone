@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, memo, useMemo } from "react";
+import { useSavePanelConfig } from "@/lib/hooks/useSavePanelConfig";
 import { useQueries } from "@tanstack/react-query";
 import { X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -271,6 +272,23 @@ export function ComparisonChartPanel({
       ? new Date(initialCustomTo * 1000).toISOString().slice(0, 10)
       : ""
   );
+
+  // Persistence: save panel config when state changes (debounced 500ms)
+  const save = useSavePanelConfig(panelId);
+  const isMountRef = useRef(true);
+  useEffect(() => {
+    if (isMountRef.current) {
+      isMountRef.current = false;
+      return;
+    }
+    const customFrom = customFromDate
+      ? Math.floor(new Date(customFromDate).getTime() / 1000)
+      : undefined;
+    const customTo = customToDate
+      ? Math.floor(new Date(customToDate).getTime() / 1000)
+      : undefined;
+    save({ tickers: chartTickers, timeRange, customFrom, customTo });
+  }, [chartTickers, timeRange, customFromDate, customToDate]); // save intentionally omitted (stable ref via useMemo)
 
   // Subscribe only to activeTimeRange from the store
   const storeTimeRange = useTickerStore((s) => s.activeTimeRange);
