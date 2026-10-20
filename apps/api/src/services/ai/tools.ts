@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { getQuote, getCompanyNews } from "../finnhub.js";
+import { getQuote } from "../finnhub.js";
+import { getCompanyNews } from "../news/index.js";
 import { getCandles } from "../candles.js";
 import {
   getStockMetric,

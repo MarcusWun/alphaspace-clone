@@ -18,6 +18,15 @@ vi.mock("@/lib/queries/useCandles", () => ({
 vi.mock("@/lib/queries/useQuote", () => ({
   useQuote: useQuoteMock,
 }));
+vi.mock("@/components/canvas/CanvasContext", () => ({
+  useCanvas: () => ({
+    workspaceId: "ws-test",
+    addPanel: vi.fn(),
+    updatePanelProps: vi.fn(),
+    removePanel: vi.fn(),
+  }),
+  CanvasProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
 vi.mock("lightweight-charts", () => ({
   createChart: vi.fn(() => ({
     addSeries: vi.fn(() => ({ setData: vi.fn() })),

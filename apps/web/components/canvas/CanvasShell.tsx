@@ -6,13 +6,15 @@ import { v4 as uuidv4 } from "uuid";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PanelWrapper } from "./PanelWrapper";
-import { PANEL_REGISTRY, RENDERED_PANELS } from "./PanelRegistry";
+import { PANEL_REGISTRY, RENDERED_PANELS, TOOLBAR_PANELS } from "./PanelRegistry";
+import { CanvasProvider } from "./CanvasContext";
 import { WatchlistPanel } from "@/components/panels/WatchlistPanel";
 import { ComparisonChartPanel } from "@/components/panels/ComparisonChartPanel";
 import { NewsFeedPanel } from "@/components/panels/NewsFeedPanel";
 import { StockChartPanel } from "@/components/panels/StockChartPanel";
 import { FundamentalsPanel } from "@/components/panels/FundamentalsPanel";
 import { AiAssistantPanel } from "@/components/panels/AiAssistantPanel";
+import { ArticlePanel } from "@/components/panels/ArticlePanel";
 import { cn } from "@/lib/utils";
 import type { PanelConfig, PanelType, LayoutItem, WorkspaceLayout } from "@alpha/types";
 import "react-grid-layout/css/styles.css";
@@ -70,6 +72,13 @@ function renderPanel(
       )}
       {panel.type === "ai_assistant" && (
         <AiAssistantPanel panelId={panel.id} workspaceId={workspaceId} />
+      )}
+      {panel.type === "article" && (
+        <ArticlePanel
+          panelId={panel.id}
+          url={panel.url as string ?? ""}
+          title={panel.title as string | undefined}
+        />
       )}
       {!RENDERED_PANELS.includes(panel.type) && (
         <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
@@ -132,13 +141,14 @@ export function CanvasShell({
   );
 
   const addPanel = useCallback(
-    (type: PanelType) => {
+    (type: PanelType, propsOverride?: Record<string, unknown>) => {
       const reg = PANEL_REGISTRY[type];
       const id = uuidv4();
       const newPanel: PanelConfig = {
         id,
         type,
         ...reg.defaultProps,
+        ...(propsOverride ?? {}),
       };
 
       // Find a free y position (below existing items)
@@ -173,6 +183,17 @@ export function CanvasShell({
     [panels, grid, emitChange]
   );
 
+  const updatePanelProps = useCallback(
+    (panelId: string, props: Record<string, unknown>) => {
+      const nextPanels = panels.map((p) =>
+        p.id === panelId ? { ...p, ...props } : p
+      );
+      setPanels(nextPanels);
+      emitChange(nextPanels, grid);
+    },
+    [panels, grid, emitChange]
+  );
+
   // Sync workspaceId changes (workspace switcher)
   useEffect(() => {
     setPanels(initialLayout?.panels ?? []);
@@ -194,13 +215,14 @@ export function CanvasShell({
   }));
 
   return (
+    <CanvasProvider value={{ workspaceId, addPanel, updatePanelProps, removePanel }}>
     <div className="flex flex-col h-full">
-      {/* Toolbar */}
+      {/* Toolbar — article is spawned-only, excluded from TOOLBAR_PANELS */}
       <div className="flex items-center gap-2 px-4 py-2 border-b bg-muted/20 shrink-0">
         <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide mr-2">
           Add panel
         </span>
-        {RENDERED_PANELS.map((type) => (
+        {TOOLBAR_PANELS.map((type) => (
           <Button
             key={type}
             variant="outline"
@@ -244,5 +266,6 @@ export function CanvasShell({
         )}
       </div>
     </div>
+    </CanvasProvider>
   );
 }

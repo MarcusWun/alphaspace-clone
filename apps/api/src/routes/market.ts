@@ -13,9 +13,9 @@
 import { FastifyPluginAsync } from "fastify";
 import {
   getQuote,
-  getCompanyNews,
   getFundamentals,
 } from "../services/finnhub.js";
+import { getCompanyNews } from "../services/news/index.js";
 import {
   getCandles,
   sliceCandles,

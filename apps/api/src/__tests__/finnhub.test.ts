@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   getQuote,
-  getCompanyNews,
   getFundamentals,
 } from "../services/finnhub.js";
 import { mockRedis } from "./setup.js";
@@ -23,19 +22,6 @@ describe("Finnhub REST proxy", () => {
       } as Response);
 
       const result = await getQuote("AAPL");
-      const serialized = JSON.stringify(result);
-      expect(serialized).not.toContain(REAL_FINNHUB_KEY);
-    });
-
-    it("API key does not appear in news response", async () => {
-      const fakeNews = [{ headline: "AAPL earnings", id: 1, source: "CNBC" }];
-
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => fakeNews,
-      } as Response);
-
-      const result = await getCompanyNews("AAPL", "2026-09-01", "2026-09-27");
       const serialized = JSON.stringify(result);
       expect(serialized).not.toContain(REAL_FINNHUB_KEY);
     });

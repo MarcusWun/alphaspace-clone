@@ -1,8 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink } from "lucide-react";
 import { useTickerStore } from "@/lib/stores/tickerStore";
+import { useCanvas } from "@/components/canvas/CanvasContext";
 import { fetchCompanyNews, newsKeys } from "@/lib/queries/market";
 import type { NewsItem } from "@alpha/types";
 
@@ -19,13 +19,18 @@ function formatDate(unixSeconds: number): string {
   });
 }
 
-function NewsCard({ item }: { item: NewsItem }) {
+function NewsCard({
+  item,
+  onOpen,
+}: {
+  item: NewsItem;
+  onOpen: (url: string, headline: string) => void;
+}) {
   return (
-    <a
-      href={item.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="block p-2 rounded hover:bg-accent transition-colors group"
+    <button
+      type="button"
+      onClick={() => onOpen(item.url, item.headline)}
+      className="block w-full text-left p-2 rounded hover:bg-accent transition-colors group focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex items-start gap-2">
         <div className="flex-1 min-w-0 space-y-0.5">
@@ -38,13 +43,13 @@ function NewsCard({ item }: { item: NewsItem }) {
             <span>{formatDate(item.datetime)}</span>
           </div>
         </div>
-        <ExternalLink className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity" />
       </div>
-    </a>
+    </button>
   );
 }
 
 export function NewsFeedPanel({ panelId }: NewsFeedPanelProps) {
+  const canvas = useCanvas();
   // Subscribe only to activeTicker — refreshes within 1 render cycle of ticker change
   const activeTicker = useTickerStore((s) => s.activeTicker);
 
@@ -103,7 +108,13 @@ export function NewsFeedPanel({ panelId }: NewsFeedPanelProps) {
       {!isLoading && !error && news && news.length > 0 && (
         <div className="flex-1 overflow-auto space-y-0.5">
           {news.map((item) => (
-            <NewsCard key={item.id} item={item} />
+            <NewsCard
+              key={item.id}
+              item={item}
+              onOpen={(url, headline) =>
+                canvas.addPanel("article", { url, title: headline })
+              }
+            />
           ))}
         </div>
       )}

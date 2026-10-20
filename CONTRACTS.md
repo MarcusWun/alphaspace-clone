@@ -82,11 +82,93 @@ interface CandlesResponse {
 - **Response 200:** `{ "data": <FinnhubQuoteResponse> }`
 - **Cache:** Redis, TTL 30s
 
+#### News provider abstraction
+
+The news service selects its upstream provider via the `NEWS_PROVIDER` env var:
+
+| Value | Provider | Notes |
+|---|---|---|
+| `yahoo` (default) | `yahoo-finance2` v3 `search()` | No API key required |
+| `finnhub` | Finnhub `/company-news` | Requires `FINNHUB_API_KEY` |
+
+**Provider interface** (`services/news/types.ts`):
+```ts
+interface NewsProvider {
+  name: "yahoo" | "finnhub";
+  getCompanyNews(symbol: string, from: string, to: string): Promise<NewsItem[]>;
+}
+```
+
+**Startup log:** `[news] provider=yahoo` or `[news] provider=finnhub`
+
+**Cache key scheme:** `news:<provider>:<symbol>:<from>:<to>` — TTL 900s (15 min).
+
+**NewsItem mapping (Yahoo → NewsItem):**
+- `id` = deterministic 32-bit hash of (url + providerPublishTime)
+- `headline` = `title`
+- `summary` = `""` (Yahoo search doesn't provide snippets reliably)
+- `source` = `publisher`
+- `url` = `link`
+- `datetime` = `providerPublishTime` (unix seconds)
+- `image` = `thumbnail?.resolutions?.[0]?.url ?? ""`
+- `category` = `"company"`
+- `related` = `symbol`
+
+**getCompanyNews import path (option b — refactor):**
+`routes/market.ts` and `services/ai/tools.ts` both import `getCompanyNews` directly from `services/news/index.ts`. The function was removed from `services/finnhub.ts`.
+
+**Observability log events:**
+
+| Event | Fields |
+|---|---|
+| `news.cache_hit` | `provider, symbol, from, to` |
+| `news.cache_miss` | `provider, symbol, from, to` |
+| `news.upstream_call` | `provider, symbol, from, to, ms, count` |
+| `news.upstream_error` | `provider, symbol, error` (WARN level; yields `[]`) |
+
+**Nonsense symbol:** resolves to `[]` — Yahoo catches and logs; route returns `{data: []}` (200).
+
 #### `GET /api/company-news`
 - **Auth:** required
 - **Query params:** `symbol`, `from` (YYYY-MM-DD), `to` (YYYY-MM-DD)
-- **Response 200:** `{ "data": <FinnhubNewsItem[]> }`
-- **Cache:** Redis, TTL 120s
+- **Response 200:** `{ "data": NewsItem[] }` — envelope unchanged; provider-abstracted
+- **Cache:** Redis, TTL 900s (15 min), keyed by `news:<provider>:<symbol>:<from>:<to>`
+- **Default provider:** Yahoo Finance (set `NEWS_PROVIDER=finnhub` + restart to fall back)
+
+#### `GET /api/article/extract`
+- **Auth:** required
+- **Query params:** `url` (string, minLength 10, must match `^https?://`)
+- **Response 200 (success):** `{ "data": { "status": "ok", "article": ArticleResult } }`
+- **Response 200 (fallback):** `{ "data": { "status": "fallback", "error": "short_content" | "fetch_failed" | "parse_failed" } }` — HTTP 200 in both cases; frontend renders a fallback card when `status = "fallback"`
+- **Response 400:** invalid URL shape (Fastify schema validator)
+- **Cache:** Redis, TTL 86400s (24 h), keyed by `article:extract:<sha256(url)>`
+- **Extraction:** server-side `fetch` (10s timeout) → JSDOM + @mozilla/readability → sanitize-html (scripts stripped, inline event handlers removed, no `<iframe>`, no `<style>`)
+- **ShortContentError:** thrown when `article.textContent.length < 200`; yields `status: "fallback", error: "short_content"`
+
+**`ArticleResult` shape:**
+```ts
+interface ArticleResult {
+  title: string;
+  content: string;      // sanitized HTML
+  excerpt: string;
+  author?: string;
+  publishedAt?: string; // ISO 8601 (if extractable)
+  siteName?: string;
+  length: number;       // char count of textContent
+}
+```
+
+**Observability log events:**
+
+| Event | Fields |
+|---|---|
+| `article.extract.start` | `url` |
+| `article.extract.ok` | `url, length, ms` |
+| `article.extract.fallback` | `url, reason, ms` |
+| `article.cache_hit` | `url` |
+| `article.cache_miss` | `url` |
+
+**Sanitization library:** `sanitize-html` v2 (server-side, no DOM requirement). Allowed tags: `p br strong em b i a ul ol li h1-h6 blockquote img figure figcaption`. Allowed attributes: `a[href,rel,target]`, `img[src,alt,width,height]`. Schemes: `http`, `https` only.
 
 #### `GET /api/fundamentals`
 - **Auth:** required
@@ -529,7 +611,7 @@ Seven tools are exposed to the AI model. Each tool has a Zod validation schema; 
 |---|---|---|
 | `get_quote` | `{ symbol: string }` | `services/finnhub.ts::getQuote(symbol)` |
 | `get_candles` | `{ symbol: string, resolution: string, from: string, to: string }` | `services/candles.ts::getCandles(params)` |
-| `get_company_news` | `{ symbol: string, from: string, to: string }` | `services/finnhub.ts::getCompanyNews(symbol, from, to)` |
+| `get_company_news` | `{ symbol: string, from: string, to: string }` | `services/news/index.ts::getCompanyNews(symbol, from, to)` |
 | `get_fundamentals_metric` | `{ symbol: string }` | `services/fundamentals.ts::getStockMetric(symbol)` (24h TTL) |
 | `get_fundamentals_earnings` | `{ symbol: string }` | `services/fundamentals.ts::getStockEarnings(symbol)` |
 | `get_fundamentals_filings` | `{ symbol: string, limit?: number(1-50) }` | `services/fundamentals.ts::getStockFilings(symbol, limit)` |
@@ -584,3 +666,63 @@ The web app consumes the AI Assistant contracts via three exports:
 **Type strategy:** `ChatEvent` and `ChatMessage` types are locally mirrored in `apps/web/lib/queries/ai.ts`. They are NOT shared via `packages/types/` — these are frontend-only SSE/API shapes that don't need to cross the package boundary.
 
 **NB-1 UX caveat (history reappear):** The DELETE endpoint uses a 30s Redis sentinel. During the undo window, `GET /api/ai/history` returns `[]`. After the sentinel expires (~30s), history rows reappear in GET responses until a new POST overwrites them. The frontend presents a 30s "undo" banner after "New chat" but does NOT work around this backend behavior — if the user reloads after 30s without sending a new message, old history may reappear. This is a known carry-forward (NB-1).
+
+---
+
+## Panel Persistence — Workspace Config Write Path
+
+**Feature:** Panel config persistence via `useSavePanelConfig` hook (PRD: alphaspace-clone-persistence-yahoo-news-article-viewer-prd.md).
+
+### Single-writer discipline
+
+Panel-level config changes flow through ONE write path only:
+
+```
+useSavePanelConfig(panelId) → save(next)
+  ↓ 500ms debounce
+CanvasContext.updatePanelProps(panelId, next)
+  ↓ synchronous merge in CanvasShell.panels state
+emitChange(nextPanels, grid)
+  ↓ 300ms debounce (existing CanvasShell debounce)
+onLayoutChange({ panels, grid })
+  ↓ React Query mutation
+PUT /api/workspaces/:id  { layout: { panels, grid } }
+```
+
+**Total worst-case latency to DB:** ~800ms (500 + 300ms debounces).
+
+**Do NOT**: call `updateWorkspace` directly from a panel hook, or GET-then-PUT from panel components. The single-writer path above owns all HTTP writes for panel config.
+
+### Panels wired for persistence
+
+| Panel | Fields saved |
+|---|---|
+| ComparisonChartPanel | `tickers`, `timeRange`, `customFrom`, `customTo` |
+| StockChartPanel | `activeTicker` (symbol), `timeRange` |
+| FundamentalsPanel | `activeTicker` (symbol) |
+
+### Article panel (spawned-only)
+
+`article` panels are **never** created via the toolbar "Add panel" buttons. They are spawned exclusively by clicking a news item in `NewsFeedPanel`. Config: `{ url: string, title?: string }`.
+
+Registration: `PanelRegistry.PANEL_REGISTRY.article` (6w × 10h, min 4w × 6h). Excluded from `TOOLBAR_PANELS`; included in `RENDERED_PANELS` so `renderPanel` can dispatch to `ArticlePanel`.
+
+### `GET /api/article/extract?url=<encoded>`
+
+- **Auth:** required
+- **Query params:** `url` (URL-encoded string)
+- **Response 200 (success):**
+  ```json
+  { "data": { "status": "ok", "article": { "title": "...", "content": "<sanitized-html>", "excerpt": "...", "author": "Jane", "publishedAt": "2026-10-19T10:00:00Z", "siteName": "Reuters", "length": 1500 } } }
+  ```
+- **Response 200 (fallback — paywalled / short content / extraction error):**
+  ```json
+  { "data": { "status": "fallback", "error": "Content too short" } }
+  ```
+- **Cache:** Redis 24h TTL per URL (SHA-256 key).
+- **Frontend:** `ArticlePanel` uses React Query key `["article", url]` with `staleTime: 24h`.
+- **XSS note:** `content` field is DOMPurify-sanitized server-side before caching. Frontend renders via `dangerouslySetInnerHTML` — relies on backend sanitization.
+
+### Query key used for workspace invalidation
+
+`workspaceKeys.single(workspaceId)` (from `apps/web/lib/queries/workspaces.ts`). `workspaceKeys.current` does NOT exist — do not invent it.

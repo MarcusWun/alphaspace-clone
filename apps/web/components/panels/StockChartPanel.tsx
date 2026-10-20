@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useMemo, useState, memo } from "react";
+import { useSavePanelConfig } from "@/lib/hooks/useSavePanelConfig";
 import { useCandles } from "@/lib/queries/useCandles";
 import { useQuote } from "@/lib/queries/useQuote";
 import { timeRangeToResolution, bucketedWindowForTimeRange } from "@/lib/queries/market";
@@ -166,6 +167,17 @@ export function StockChartPanel({
   const effectiveSymbol = symbolProp ?? activeTicker ?? DEFAULT_SYMBOL;
 
   const [timeRange, setTimeRange] = useState<TimeRange>(DEFAULT_TIME_RANGE);
+
+  // Persistence: save activeTicker + timeRange back to workspace on change
+  const save = useSavePanelConfig(panelId);
+  const isMountRef = useRef(true);
+  useEffect(() => {
+    if (isMountRef.current) {
+      isMountRef.current = false;
+      return;
+    }
+    save({ activeTicker: effectiveSymbol, timeRange });
+  }, [effectiveSymbol, timeRange]); // save intentionally omitted (stable ref via useMemo)
 
   const resolution = useMemo(() => timeRangeToResolution(timeRange), [timeRange]);
 

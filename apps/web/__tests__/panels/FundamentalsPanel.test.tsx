@@ -28,6 +28,16 @@ vi.mock("@/lib/queries/fundamentals", async (importOriginal) => {
   };
 });
 
+vi.mock("@/components/canvas/CanvasContext", () => ({
+  useCanvas: () => ({
+    workspaceId: "ws-test",
+    addPanel: vi.fn(),
+    updatePanelProps: vi.fn(),
+    removePanel: vi.fn(),
+  }),
+  CanvasProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 // Mock recharts to avoid canvas/SVG issues in jsdom
 vi.mock("recharts", () => ({
   BarChart: ({ children }: { children: React.ReactNode }) => <div data-testid="bar-chart">{children}</div>,

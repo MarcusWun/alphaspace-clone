@@ -24,6 +24,15 @@ const { fetchCompanyNewsMock } = vi.hoisted(() => ({
   ]),
 }));
 
+vi.mock("@/components/canvas/CanvasContext", () => ({
+  useCanvas: () => ({
+    workspaceId: "ws-test",
+    addPanel: vi.fn(),
+    updatePanelProps: vi.fn(),
+    removePanel: vi.fn(),
+  }),
+}));
+
 vi.mock("@/lib/queries/market", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/queries/market")>();
   return {

@@ -3,8 +3,11 @@ import { dispatchTool } from "../../services/ai/tools.js";
 
 vi.mock("../../services/finnhub.js", () => ({
   getQuote: vi.fn(),
-  getCompanyNews: vi.fn(),
   getFundamentals: vi.fn(),
+}));
+
+vi.mock("../../services/news/index.js", () => ({
+  getCompanyNews: vi.fn(),
 }));
 
 vi.mock("../../services/candles.js", () => ({
@@ -18,7 +21,8 @@ vi.mock("../../services/fundamentals.js", () => ({
   getStockRecommendation: vi.fn(),
 }));
 
-import { getQuote, getCompanyNews } from "../../services/finnhub.js";
+import { getQuote } from "../../services/finnhub.js";
+import { getCompanyNews } from "../../services/news/index.js";
 import { getCandles } from "../../services/candles.js";
 import {
   getStockMetric,
@@ -82,7 +86,7 @@ describe("dispatchTool", () => {
 
   describe("get_company_news", () => {
     it("returns ok:true with result on success", async () => {
-      mockNews.mockResolvedValue([{ headline: "news" }]);
+      mockNews.mockResolvedValue([{ headline: "news" }] as never);
       const result = await dispatchTool("get_company_news", {
         symbol: "TSLA",
         from: "2026-01-01",

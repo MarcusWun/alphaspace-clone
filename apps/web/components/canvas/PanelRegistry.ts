@@ -68,6 +68,15 @@ export const PANEL_REGISTRY: Record<PanelType, PanelRegistryEntry> = {
     minH: 6,
     defaultProps: {},
   },
+  article: {
+    id: "article",
+    label: "Article",
+    defaultW: 6,
+    defaultH: 10,
+    minW: 4,
+    minH: 6,
+    defaultProps: { url: "" },
+  },
 };
 
 /** Panel types that Phase 1 shipped. */
@@ -77,13 +86,19 @@ export const PHASE1_PANELS: PanelType[] = [
   "news_feed",
 ];
 
-/** All panels rendered as of Phase 3a (Phase 2a + ai_assistant). */
+/** All panels rendered as of this phase (includes article for dispatch). */
 export const RENDERED_PANELS: PanelType[] = [
   ...PHASE1_PANELS,
   "stock_chart",
   "fundamentals",
   "ai_assistant",
+  "article",
 ];
+
+/** Panels shown in the toolbar "Add panel" buttons — excludes spawned-only types. */
+export const TOOLBAR_PANELS: PanelType[] = RENDERED_PANELS.filter(
+  (t) => t !== "article"
+);
 
 // Lazy component loader — panels import their own heavy deps
 export type PanelComponent = ComponentType<{
