@@ -22,9 +22,10 @@ const authHeader = bearerFor("user-1", "test@example.com");
 
 // Mock yahoo-finance2 (v3 class-based API) at the route-test level
 const mockChartFn = vi.hoisted(() => vi.fn());
+const mockSearchFn = vi.hoisted(() => vi.fn());
 
 vi.mock("yahoo-finance2", () => ({
-  default: vi.fn().mockImplementation(() => ({ chart: mockChartFn })),
+  default: vi.fn().mockImplementation(() => ({ chart: mockChartFn, search: mockSearchFn })),
 }));
 
 // chart() result shape (ChartResultArray)
@@ -212,21 +213,27 @@ describe("Market proxy routes", () => {
   });
 
   describe("GET /api/company-news", () => {
-    it("returns news data", async () => {
-      const fakeNews = [{ headline: "AAPL beats estimates", id: 1 }];
+    it("returns news data via Yahoo provider (default)", async () => {
+      const fakeNewsItems = [
+        {
+          title: "AAPL beats estimates",
+          link: "https://example.com/news/aapl",
+          publisher: "CNBC",
+          providerPublishTime: 1759200000, // 2025-09-30 UTC — within from/to window
+        },
+      ];
       mockRedis.get.mockResolvedValueOnce(null);
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => fakeNews,
-      } as Response);
+      mockSearchFn.mockResolvedValueOnce({ news: fakeNewsItems });
 
       const app = await buildApp();
       const res = await app.inject({
         method: "GET",
-        url: "/api/company-news?symbol=AAPL&from=2026-09-01&to=2026-09-27",
+        url: "/api/company-news?symbol=AAPL&from=2025-09-01&to=2025-09-30",
         headers: { authorization: authHeader },
       });
       expect(res.statusCode).toBe(200);
+      const body = res.json<{ data: unknown[] }>();
+      expect(Array.isArray(body.data)).toBe(true);
       await app.close();
     });
   });

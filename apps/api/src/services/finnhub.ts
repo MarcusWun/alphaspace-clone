@@ -124,16 +124,8 @@ export async function getQuote(symbol: string): Promise<unknown> {
   );
 }
 
-export async function getCompanyNews(
-  symbol: string,
-  from: string,
-  to: string
-): Promise<unknown> {
-  const cacheKey = `finnhub:news:${symbol}:${from}:${to}`;
-  return cachedFetch(cacheKey, 120, () =>
-    finnhubFetch("/company-news", { symbol, from, to })
-  );
-}
+// getCompanyNews moved to services/news/index.ts (provider abstraction, 15-min cache)
+// Import path: import { getCompanyNews } from "./news/index.js"
 
 export async function getFundamentals(symbol: string): Promise<unknown> {
   const cacheKey = `finnhub:fundamentals:${symbol}`;
