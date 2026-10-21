@@ -11,10 +11,19 @@ interface YahooNewsItem {
   title?: string;
   link?: string;
   publisher?: string;
-  providerPublishTime?: number;
+  providerPublishTime?: string | number; // v3 returns ISO 8601 string; v2 returned number
   thumbnail?: {
     resolutions?: Array<{ url?: string }>;
   };
+}
+
+// Normalize providerPublishTime to unix seconds regardless of whether Yahoo returns a
+// string (ISO 8601, v3+) or a number (unix seconds, v2). Returns null for junk values.
+function toUnixSec(value: string | number | undefined): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? Math.floor(value) : null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
 }
 
 /** Deterministic 32-bit hash of (url, publishTime) for synthesizing NewsItem.id */
@@ -49,17 +58,15 @@ async function getCompanyNews(
     if (newsItems.length === 0) return [];
 
     return newsItems
-      .filter((item) => {
-        const ts = item.providerPublishTime;
-        return ts !== undefined && ts >= fromSec && ts <= toSec;
-      })
-      .map((item): NewsItem => ({
-        id: hashId(item.link ?? "", item.providerPublishTime ?? 0),
+      .map((item) => ({ item, ts: toUnixSec(item.providerPublishTime) }))
+      .filter(({ ts }) => ts !== null && ts >= fromSec && ts <= toSec)
+      .map(({ item, ts }): NewsItem => ({
+        id: hashId(item.link ?? "", ts as number),
         headline: item.title ?? "",
         summary: "",
         source: item.publisher ?? "",
         url: item.link ?? "",
-        datetime: item.providerPublishTime ?? 0,
+        datetime: ts as number,
         image: item.thumbnail?.resolutions?.[0]?.url ?? "",
         category: "company",
         related: symbol,

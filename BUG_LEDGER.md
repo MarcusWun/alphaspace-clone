@@ -211,6 +211,14 @@ In `apps/api/src/__tests__/alphaVantage.test.ts`:
 
 ---
 
+## 2026-10-21 — Yahoo News providerPublishTime type mismatch
+- Symptom: News Feed showed "no recent news" for every ticker; api logs showed `news.upstream_call count=0` for all Yahoo calls.
+- Root cause: yahoo-finance2 v3 returns `providerPublishTime` as ISO 8601 string, not number. Our filter did `string >= number` → NaN comparison → always false → every item dropped.
+- Files affected: `apps/api/src/services/news/yahoo.ts`
+- Regression tests added: ISO-in-window / numeric-backwards-compat / ISO-outside-window / malformed / missing / mixed cases in `apps/api/src/__tests__/news/yahoo.test.ts`
+- Fix commit: <SHA>
+- Prevention: `toUnixSec()` tolerates `string | number`; `Number.isFinite` guard drops junk rather than propagating.
+
 ## Known Risks
 
 | Risk | Symptom | Impact | Migration Owner | Workaround |
