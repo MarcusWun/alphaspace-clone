@@ -26,7 +26,7 @@ const SECTIONS = [
 
 export function FundamentalsPanel({ panelId, symbol: symbolProp }: FundamentalsPanelProps) {
   const activeTicker = useTickerStore((s) => s.activeTicker);
-  const effectiveSymbol = symbolProp ?? activeTicker ?? DEFAULT_SYMBOL;
+  const effectiveSymbol = activeTicker ?? symbolProp ?? DEFAULT_SYMBOL;
 
   // Persistence: save activeTicker back to workspace on change
   const save = useSavePanelConfig(panelId);
