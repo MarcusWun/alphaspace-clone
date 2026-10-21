@@ -168,6 +168,13 @@ export function CanvasShell({
       setPanels(nextPanels);
       setGrid(nextGrid);
       emitChange(nextPanels, nextGrid);
+
+      if (type === "article") {
+        requestAnimationFrame(() => {
+          const el = containerRef.current?.querySelector<HTMLElement>(`[data-panel-id="${id}"]`);
+          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
     },
     [panels, grid, emitChange]
   );
@@ -258,6 +265,7 @@ export function CanvasShell({
                 key={panel.id}
                 className={cn("overflow-hidden")}
                 data-testid={`panel-${panel.type}-${panel.id}`}
+                data-panel-id={panel.id}
               >
                 {renderPanel(panel, removePanel, chartType, workspaceId)}
               </div>

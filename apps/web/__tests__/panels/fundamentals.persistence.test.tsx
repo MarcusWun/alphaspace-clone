@@ -78,7 +78,7 @@ describe("FundamentalsPanel persistence", () => {
     expect(updatePanelPropsMock).not.toHaveBeenCalled();
   });
 
-  it("saves activeTicker when effectiveSymbol changes", () => {
+  it("saves activeTicker when activeTicker store value changes", () => {
     // Reuse the same QueryClient so React does an in-place update (not remount)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -93,13 +93,17 @@ describe("FundamentalsPanel persistence", () => {
     });
     expect(updatePanelPropsMock).not.toHaveBeenCalled();
 
-    // Re-render with a new symbol (same QC so no remount) — flush effects first
+    // Simulate a watchlist click: activeTicker changes from "NVDA" to "AMD"
+    tickerStoreMock.mockImplementation(
+      (selector: (s: { activeTicker: string | null }) => unknown) =>
+        selector({ activeTicker: "AMD" })
+    );
     rerender(
       <QueryClientProvider client={qc}>
-        <FundamentalsPanel panelId="fund-1" symbol="AMD" />
+        <FundamentalsPanel panelId="fund-1" symbol="NVDA" />
       </QueryClientProvider>
     );
-    // Now advance timers to fire the debounce
+    // Advance timers to fire the debounce
     act(() => {
       vi.advanceTimersByTime(500);
     });

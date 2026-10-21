@@ -164,7 +164,7 @@ export function StockChartPanel({
   chartType = "line",
 }: StockChartPanelProps) {
   const activeTicker = useTickerStore((s) => s.activeTicker);
-  const effectiveSymbol = symbolProp ?? activeTicker ?? DEFAULT_SYMBOL;
+  const effectiveSymbol = activeTicker ?? symbolProp ?? DEFAULT_SYMBOL;
 
   const [timeRange, setTimeRange] = useState<TimeRange>(DEFAULT_TIME_RANGE);
 
